@@ -10,6 +10,7 @@ import { getSortedSheetKeys_ACU } from '../../service/template/chat-scope';
 import { buildDefaultExportConfig_ACU } from '../../service/worldbook/injection-engine';
 import { jQuery_API_ACU } from '../dom-utils';
 import { _acuVisState } from './visualizer';
+import { handleVisualizerTemplateAssistantSheetChange_ACU } from './visualizer-template-assistant';
 
   export function getOrderedSheetKeys_ACU() {
       // 新机制：顺序由每张表的 orderNo 决定；编辑器内部仍保留一个数组用于“上移/下移”
@@ -114,6 +115,7 @@ import { _acuVisState } from './visualizer';
               _acuVisState.currentSheetKey = key;
               renderVisualizerSidebar_ACU();
               renderVisualizerMain_ACU();
+              handleVisualizerTemplateAssistantSheetChange_ACU();
           });
 
           // 上移按钮
@@ -144,14 +146,15 @@ import { _acuVisState } from './visualizer';
                   delete _acuVisState.tempData[keyToDelete];
                   // 从顺序列表中移除
       _acuVisState.sheetOrder = _acuVisState.sheetOrder.filter((k: string) => k !== keyToDelete);
-                  if (_acuVisState.currentSheetKey === keyToDelete) {
-                      const remainingKeys = getOrderedSheetKeys_ACU();
-                      _acuVisState.currentSheetKey = remainingKeys.length > 0 ? remainingKeys[0] : null;
-                  }
-                  renderVisualizerSidebar_ACU();
-                  renderVisualizerMain_ACU();
-              }
-          });
+                   if (_acuVisState.currentSheetKey === keyToDelete) {
+                       const remainingKeys = getOrderedSheetKeys_ACU();
+                       _acuVisState.currentSheetKey = remainingKeys.length > 0 ? remainingKeys[0] : null;
+                   }
+                   renderVisualizerSidebar_ACU();
+                   renderVisualizerMain_ACU();
+                   handleVisualizerTemplateAssistantSheetChange_ACU();
+               }
+           });
 
           $list.append($item);
       });
@@ -179,12 +182,13 @@ import { _acuVisState } from './visualizer';
                   [TABLE_ORDER_FIELD_ACU]: 999999 // 临时占位，稍后会被 getOrderedSheetKeys_ACU / applySheetOrderNumbers_ACU 重编号
               };
               // 添加到顺序列表末尾 (getOrderedSheetKeys_ACU 会自动同步新增的 key，无需手动 push)
-              getOrderedSheetKeys_ACU();
-              _acuVisState.currentSheetKey = newKey;
-              renderVisualizerSidebar_ACU();
-              renderVisualizerMain_ACU();
-          }
-      });
+               getOrderedSheetKeys_ACU();
+               _acuVisState.currentSheetKey = newKey;
+               renderVisualizerSidebar_ACU();
+               renderVisualizerMain_ACU();
+               handleVisualizerTemplateAssistantSheetChange_ACU();
+           }
+       });
 
       $list.append($addBtn);
   }

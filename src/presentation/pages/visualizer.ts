@@ -14,6 +14,7 @@ import { logDebug_ACU, logWarn_ACU } from '../../shared/utils';
 import { getActiveTemplatePresetMeta_ACU } from '../../service/template/template-preset-service';
 import { mergeAllIndependentTables_ACU } from '../../service/runtime/helpers-remaining';
 import { VISUALIZER_CSS_ACU } from './visualizer-styles';
+import { renderVisualizerTemplateAssistantPanel_ACU, resetVisualizerTemplateAssistantState_ACU, toggleVisualizerTemplateAssistant_ACU } from './visualizer-template-assistant';
 
   // Internal state for visualizer
   export let _acuVisState: any = {
@@ -85,6 +86,10 @@ import { VISUALIZER_CSS_ACU } from './visualizer-styles';
       // Initial Load
       _acuVisState.tempData = JSON.parse(JSON.stringify(currentJsonTableData_ACU));
       _acuVisState.currentSheetKey = getSortedSheetKeys_ACU(_acuVisState.tempData)[0] || null; // Default to first sheet
+      _acuVisState.mode = 'data';
+      _acuVisState.sheetOrder = null;
+      _acuVisState.deletedSheetKeys = [];
+      resetVisualizerTemplateAssistantState_ACU();
       const activeTemplateMeta_ACU = getActiveTemplatePresetMeta_ACU();
       const activeTemplatePresetText_ACU = `当前生效模板预设：${activeTemplateMeta_ACU.displayName}（${activeTemplateMeta_ACU.scopeLabel}）`;
       
@@ -104,18 +109,20 @@ import { VISUALIZER_CSS_ACU } from './visualizer-styles';
                           <div id="acu-vis-template-preset-indicator" class="acu-hint" style="font-size: 12px; color: var(--vis-text-mute);">${escapeHtml_ACU(activeTemplatePresetText_ACU)}</div>
                       </div>
                   </div>
-                  <div class="acu-vis-actions" style="display: flex; gap: 10px;">
-                      <button id="acu-vis-theme-btn" class="acu-btn-secondary acu-vis-theme-btn" title="切换主题"><span class="acu-theme-toggle-text">素纱</span></button>
-                      <button id="acu-vis-save-btn" class="acu-btn-primary"><i class="fa-solid fa-save"></i> 保存到当前聊天</button>
-                      <button id="acu-vis-save-template-btn" class="acu-btn-secondary"><i class="fa-solid fa-save"></i> 保存到全局</button>
-                  </div>
-              </div>
-              <div class="acu-vis-content" style="flex: 1; display: flex; overflow: hidden;">
-                  <div class="acu-vis-sidebar" id="acu-vis-sidebar-list"></div>
-                  <div class="acu-vis-main" id="acu-vis-main-area"></div>
-              </div>
-          </div>
-      `;
+                   <div class="acu-vis-actions" style="display: flex; gap: 10px;">
+                       <button id="acu-vis-assistant-btn" class="acu-btn-secondary"><i class="fa-solid fa-wand-magic-sparkles"></i> AI 改表助手</button>
+                       <button id="acu-vis-theme-btn" class="acu-btn-secondary acu-vis-theme-btn" title="切换主题"><span class="acu-theme-toggle-text">素纱</span></button>
+                       <button id="acu-vis-save-btn" class="acu-btn-primary"><i class="fa-solid fa-save"></i> 保存到当前聊天</button>
+                       <button id="acu-vis-save-template-btn" class="acu-btn-secondary"><i class="fa-solid fa-save"></i> 保存到全局</button>
+                   </div>
+               </div>
+               <div class="acu-vis-content" style="flex: 1; display: flex; overflow: hidden;">
+                   <div class="acu-vis-sidebar" id="acu-vis-sidebar-list"></div>
+                   <div class="acu-vis-main" id="acu-vis-main-area"></div>
+                   <div id="acu-vis-assistant-host"></div>
+               </div>
+           </div>
+       `;
       
       const windowId = `${SCRIPT_ID_PREFIX_ACU}-visualizer-window`;
       
@@ -156,13 +163,17 @@ import { VISUALIZER_CSS_ACU } from './visualizer-styles';
               });
 
               // 主题切换按钮绑定
-              $window.find('#acu-vis-theme-btn').on('click', function(e) {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  const nextTheme = toggleACUTheme_ACU(document);
-                  const nextLabel = nextTheme === 'silk' ? '墨纸' : '素纱';
-                  $window.find('#acu-vis-theme-btn .acu-theme-toggle-text').text(nextLabel);
-              });
+               $window.find('#acu-vis-theme-btn').on('click', function(e) {
+                   e.preventDefault();
+                   e.stopPropagation();
+                   const nextTheme = toggleACUTheme_ACU(document);
+                   const nextLabel = nextTheme === 'silk' ? '墨纸' : '素纱';
+                   $window.find('#acu-vis-theme-btn .acu-theme-toggle-text').text(nextLabel);
+               });
+
+               $window.find('#acu-vis-assistant-btn').on('click', function() {
+                   toggleVisualizerTemplateAssistant_ACU();
+               });
 
               // [核心重构] 绑定事件以支持旧的触发方式，但实际逻辑委托给全局函数
               jQuery_API_ACU(document).off('acu-visualizer-refresh-data');
@@ -172,11 +183,12 @@ import { VISUALIZER_CSS_ACU } from './visualizer-styles';
                   }
               });
 
-              renderVisualizerSidebar_ACU();
-              renderVisualizerMain_ACU();
-              updateVisualizerTemplatePresetIndicator_ACU();
-          }
-      });
-  }
+               renderVisualizerSidebar_ACU();
+               renderVisualizerMain_ACU();
+               renderVisualizerTemplateAssistantPanel_ACU();
+               updateVisualizerTemplatePresetIndicator_ACU();
+           }
+       });
+   }
 
   // [新增] 表格顺序管理 - 存储有序的表格键列表
