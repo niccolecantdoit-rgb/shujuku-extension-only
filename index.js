@@ -1535,7 +1535,7 @@ function hashUserInput_ACU(text) {
 /**
  * 非负整数归一化（fallback 默认 0）
  */
-function normalizeNonNegativeInteger_ACU(value, fallbackValue = 0) {
+function normalizeNonNegativeInteger_ACU$1(value, fallbackValue = 0) {
     const num = Number(value);
     if (Number.isFinite(num) && num >= 0)
         return Math.floor(num);
@@ -1545,7 +1545,7 @@ function normalizeNonNegativeInteger_ACU(value, fallbackValue = 0) {
 /**
  * 正整数归一化（fallback 默认 1）
  */
-function normalizePositiveInteger_ACU(value, fallbackValue = 1) {
+function normalizePositiveInteger_ACU$1(value, fallbackValue = 1) {
     const num = Number(value);
     if (Number.isFinite(num) && num > 0)
         return Math.floor(num);
@@ -12853,7 +12853,7 @@ function replacePlotTagPlaceholders_ACU(text, tagSourceMap) {
 function sortPlotTaskResults_ACU(results) {
     return (Array.isArray(results) ? [...results] : [])
         .filter(Boolean)
-        .sort((a, b) => (normalizePositiveInteger_ACU(a?.stage, 1) - normalizePositiveInteger_ACU(b?.stage, 1)) || ((a?.order ?? 0) - (b?.order ?? 0)));
+        .sort((a, b) => (normalizePositiveInteger_ACU$1(a?.stage, 1) - normalizePositiveInteger_ACU$1(b?.stage, 1)) || ((a?.order ?? 0) - (b?.order ?? 0)));
 }
 function aggregatePlotTaskTags_ACU(taskResults) {
     const aggregated = new Map();
@@ -12999,12 +12999,12 @@ function willPlotUseMainApiGenerateRaw_ACU() {
 function sortPlotTasksForRuntime_ACU(tasks) {
     return (Array.isArray(tasks) ? [...tasks] : [])
         .filter(Boolean)
-        .sort((a, b) => (normalizePositiveInteger_ACU(a?.stage, 1) - normalizePositiveInteger_ACU(b?.stage, 1)) || ((a?.order ?? 0) - (b?.order ?? 0)));
+        .sort((a, b) => (normalizePositiveInteger_ACU$1(a?.stage, 1) - normalizePositiveInteger_ACU$1(b?.stage, 1)) || ((a?.order ?? 0) - (b?.order ?? 0)));
 }
 function groupPlotTasksByStage_ACU(tasks) {
     const stageGroups = [];
     sortPlotTasksForRuntime_ACU(tasks).forEach((task) => {
-        const stageNo = normalizePositiveInteger_ACU(task?.stage, 1);
+        const stageNo = normalizePositiveInteger_ACU$1(task?.stage, 1);
         let currentGroup = stageGroups[stageGroups.length - 1];
         if (!currentGroup || currentGroup.stage !== stageNo) {
             currentGroup = { stage: stageNo, tasks: [] };
@@ -13232,9 +13232,9 @@ async function renderPlotTaskMessages_ACU(task, sharedContext, runtimeOptions = 
 async function executeSinglePlotTask_ACU(task, sharedContext, runtimeOptions = {}) {
     const normalizedTask = normalizePlotTask_ACU(task, { index: task?.order ?? 0, fallbackTask: task || null });
     const taskLabel = normalizedTask.name || normalizedTask.id || '未命名任务';
-    const taskStage = normalizePositiveInteger_ACU(normalizedTask.stage, 1);
-    const maxRetries = normalizePositiveInteger_ACU(normalizedTask.maxRetries, sharedContext?.plotSettings?.loopSettings?.maxRetries ?? DEFAULT_PLOT_SETTINGS_ACU.loopSettings?.maxRetries ?? 3);
-    const minLength = normalizeNonNegativeInteger_ACU(normalizedTask.minLength, 0);
+    const taskStage = normalizePositiveInteger_ACU$1(normalizedTask.stage, 1);
+    const maxRetries = normalizePositiveInteger_ACU$1(normalizedTask.maxRetries, sharedContext?.plotSettings?.loopSettings?.maxRetries ?? DEFAULT_PLOT_SETTINGS_ACU.loopSettings?.maxRetries ?? 3);
+    const minLength = normalizeNonNegativeInteger_ACU$1(normalizedTask.minLength, 0);
     try {
         checkPlotAbortRequested_ACU();
         const messages = await renderPlotTaskMessages_ACU(normalizedTask, sharedContext, runtimeOptions);
@@ -18217,13 +18217,13 @@ function normalizePlotTask_ACU(task, { index = 0, fallbackTask = null } = {}) {
         promptGroup,
         extractTags: typeof cloned.extractTags === 'string' ? cloned.extractTags : (fallback?.extractTags || ''),
         finalDirectiveTemplate: typeof cloned.finalDirectiveTemplate === 'string' ? cloned.finalDirectiveTemplate : (fallback?.finalDirectiveTemplate || ''),
-        minLength: normalizeNonNegativeInteger_ACU(cloned.minLength, fallback?.minLength ?? 0),
-        maxRetries: normalizePositiveInteger_ACU(cloned.maxRetries ?? cloned.loopSettings?.maxRetries, fallback?.maxRetries ?? DEFAULT_PLOT_SETTINGS_ACU.loopSettings?.maxRetries ?? 3),
+        minLength: normalizeNonNegativeInteger_ACU$1(cloned.minLength, fallback?.minLength ?? 0),
+        maxRetries: normalizePositiveInteger_ACU$1(cloned.maxRetries ?? cloned.loopSettings?.maxRetries, fallback?.maxRetries ?? DEFAULT_PLOT_SETTINGS_ACU.loopSettings?.maxRetries ?? 3),
         mergeStrategy: typeof cloned.mergeStrategy === 'string' && cloned.mergeStrategy.trim()
             ? cloned.mergeStrategy.trim()
             : (fallback?.mergeStrategy || 'append'),
-        stage: normalizePositiveInteger_ACU(cloned.stage, fallback?.stage ?? 1),
-        order: normalizeNonNegativeInteger_ACU(cloned.order, fallback?.order ?? index),
+        stage: normalizePositiveInteger_ACU$1(cloned.stage, fallback?.stage ?? 1),
+        order: normalizeNonNegativeInteger_ACU$1(cloned.order, fallback?.order ?? index),
     };
 }
 function buildLegacyWrappedPlotTask_ACU(source, { taskId = 'defaultPlotTask', taskName = '默认任务', order = 0 } = {}) {
@@ -18264,7 +18264,7 @@ function syncLegacyPlotSettingsFromTask_ACU(plotSettings, task) {
     const normalizedPromptGroup = getPlotPromptGroupFromSource_ACU(task);
     plotSettings.promptGroup = JSON.parse(JSON.stringify(normalizedPromptGroup));
     plotSettings.extractTags = typeof task.extractTags === 'string' ? task.extractTags : '';
-    plotSettings.minLength = normalizeNonNegativeInteger_ACU(task.minLength, 0);
+    plotSettings.minLength = normalizeNonNegativeInteger_ACU$1(task.minLength, 0);
     const legacyPromptTexts = getLegacyPromptTextsFromPromptGroup_ACU(normalizedPromptGroup);
     setPlotPromptContentByIdForSettings_ACU(plotSettings, 'mainPrompt', legacyPromptTexts.mainPrompt || '');
     setPlotPromptContentByIdForSettings_ACU(plotSettings, 'systemPrompt', legacyPromptTexts.systemPrompt || '');
@@ -20253,7 +20253,7 @@ function renderPlotTaskList_ACU(plotSettings = getActivePlotEditorSettings_ACU()
         const isSelected = selectedTask?.id === task.id;
         const enabledText = task.enabled !== false ? '启用' : '停用';
         const enabledColor = task.enabled !== false ? 'var(--green)' : 'var(--red)';
-        const stageNo = normalizePositiveInteger_ACU(task?.stage, 1);
+        const stageNo = normalizePositiveInteger_ACU$1(task?.stage, 1);
         const itemHtml = `
               <button type="button" class="button acu-plot-task-item ${isSelected ? 'acu-plot-task-item--active' : ''}" data-task-id="${escapeHtml_ACU(task.id)}" style="display:flex; width:100%; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px; padding:10px 12px; text-align:left; border:${isSelected ? '1px solid var(--accent-primary)' : '1px solid var(--border_color_light)'}; background:${isSelected ? 'color-mix(in srgb, var(--accent-primary) 12%, var(--background_default))' : 'var(--background_default)'}; border-radius:8px;">
                   <span style="display:flex; flex-direction:column; gap:4px; min-width:0;">
@@ -20285,7 +20285,7 @@ function loadCurrentPlotTaskToUI_ACU(plotSettings = getActivePlotEditorSettings_
     $popupInstance_ACU.find(`#${SCRIPT_ID_PREFIX_ACU}-plot-task-enabled`).prop('checked', selectedTask.enabled !== false);
     $popupInstance_ACU.find(`#${SCRIPT_ID_PREFIX_ACU}-plot-extract-tags`).val(selectedTask.extractTags || '');
     $popupInstance_ACU.find(`#${SCRIPT_ID_PREFIX_ACU}-plot-min-length`).val(selectedTask.minLength ?? 0);
-    $popupInstance_ACU.find(`#${SCRIPT_ID_PREFIX_ACU}-plot-task-stage`).val(normalizePositiveInteger_ACU(selectedTask.stage, 1));
+    $popupInstance_ACU.find(`#${SCRIPT_ID_PREFIX_ACU}-plot-task-stage`).val(normalizePositiveInteger_ACU$1(selectedTask.stage, 1));
     $popupInstance_ACU.find(`#${SCRIPT_ID_PREFIX_ACU}-plot-task-max-retries`).val(selectedTask.maxRetries ?? DEFAULT_PLOT_SETTINGS_ACU.loopSettings?.maxRetries ?? 3);
 }
 function saveCurrentPlotTaskFromUI_ACU({ silent = false, renderTaskList = false, persist = true } = {}) {
@@ -20338,7 +20338,7 @@ function flushCurrentPlotTaskEditorState_ACU({ renderTaskList = false, persist =
 }
 function buildNewPlotTaskForUI_ACU(plotSettings = getActivePlotEditorSettings_ACU()) {
     const tasks = Array.isArray(plotSettings?.plotTasks) ? plotSettings.plotTasks : [];
-    const defaultStage = normalizePositiveInteger_ACU(tasks[tasks.length - 1]?.stage, 1);
+    const defaultStage = normalizePositiveInteger_ACU$1(tasks[tasks.length - 1]?.stage, 1);
     let serial = tasks.length + 1;
     let taskId = `plotTask${serial}`;
     while (tasks.some((task) => task && task.id === taskId)) {
@@ -30679,6 +30679,163 @@ const VISUALIZER_CSS_ACU = `
     #acu-visualizer-content #acu-vis-add-row div {
         color: var(--vis-accent) !important;
     }
+
+    /* ═══════════════════════════════════════════════════════════════
+       AI 改表助手面板
+       使用 flex containment 模式确保内部滚动
+       ═══════════════════════════════════════════════════════════════ */
+    #acu-vis-assistant-host {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+    }
+    .acu-vis-assistant-panel {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        height: 100%;
+        flex-shrink: 0;
+    }
+    .acu-vis-assistant-header {
+        flex-shrink: 0;
+    }
+    .acu-vis-assistant-body {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+    }
+    .acu-vis-assistant-body::-webkit-scrollbar {
+        width: 4px;
+    }
+    .acu-vis-assistant-body::-webkit-scrollbar-track {
+        background: transparent;
+    }
+    .acu-vis-assistant-body::-webkit-scrollbar-thumb {
+        background: var(--vis-border-color);
+        border-radius: 1px;
+    }
+    .acu-vis-assistant-body::-webkit-scrollbar-thumb:hover {
+        background: var(--vis-text-mute);
+    }
+    /* assistant 内的区块样式 */
+    .acu-assistant-section {
+        padding: 12px;
+        background: var(--vis-bg-light);
+        border: 1px solid var(--vis-border-color);
+        border-radius: 2px;
+        margin-bottom: 12px;
+    }
+    .acu-assistant-title {
+        font-size: 12px;
+        color: var(--vis-text-mute);
+        letter-spacing: 1px;
+        margin-bottom: 8px;
+    }
+    .acu-assistant-diff-block {
+        margin-bottom: 8px;
+        font-size: 13px;
+    }
+    .acu-assistant-diff-block strong {
+        color: var(--vis-text-dim);
+        letter-spacing: 1px;
+    }
+    .acu-assistant-diff-block ul {
+        margin: 4px 0 0 12px;
+        padding: 0;
+        list-style: none;
+    }
+    .acu-assistant-diff-block li {
+        padding: 2px 0;
+        color: var(--vis-text-main);
+    }
+    .acu-assistant-risk-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+    .acu-assistant-risk-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        cursor: pointer;
+    }
+    .acu-assistant-risk-item span {
+        font-size: 13px;
+        color: var(--vis-text-main);
+    }
+    .acu-assistant-actions-row {
+        padding-top: 12px;
+        border-top: 1px solid var(--vis-border-color);
+    }
+    /* assistant session meta */
+    .acu-assistant-session-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        padding: 10px 12px;
+        background: var(--vis-bg-stats);
+        border: 1px solid var(--vis-border-color);
+        border-radius: 2px;
+        margin-bottom: 12px;
+        font-size: 12px;
+    }
+    .acu-assistant-meta-item {
+        color: var(--vis-text-dim);
+    }
+    .acu-assistant-error-text {
+        color: #c55;
+    }
+    /* assistant round history */
+    .acu-assistant-round-item {
+        border: 1px solid var(--vis-border-color);
+        border-radius: 2px;
+        margin-bottom: 8px;
+        background: var(--vis-bg-stats);
+    }
+    .acu-assistant-round-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        cursor: default;
+    }
+    .acu-assistant-round-badge {
+        font-size: 11px;
+        color: var(--vis-accent);
+        background: rgba(125, 73, 64, 0.10);
+        padding: 2px 6px;
+        border-radius: 1px;
+        letter-spacing: 1px;
+    }
+    .acu-assistant-round-summary {
+        flex: 1;
+        min-width: 0;
+        font-size: 13px;
+        color: var(--vis-text-main);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .acu-assistant-round-op-count {
+        font-size: 11px;
+        color: var(--vis-text-mute);
+    }
+    .acu-assistant-round-toggle {
+        padding: 4px 8px;
+        font-size: 11px;
+    }
+    .acu-assistant-round-detail {
+        padding: 8px 12px;
+        border-top: 1px solid var(--vis-border-color);
+        background: var(--vis-bg-light);
+    }
+    .acu-assistant-round-detail .acu-assistant-section {
+        margin-bottom: 8px;
+        padding: 8px;
+    }
+    .acu-assistant-round-detail .acu-assistant-section:last-child {
+        margin-bottom: 0;
+    }
   `;
 
 // Internal state for visualizer
@@ -40392,6 +40549,14 @@ function clone_ACU$2(value) {
 function isObject_ACU(value) {
     return !!value && typeof value === 'object' && !Array.isArray(value);
 }
+function stableStringify_ACU(value) {
+    return JSON.stringify(value);
+}
+function isSameValue_ACU(left, right) {
+    if (left === right)
+        return true;
+    return stableStringify_ACU(left) === stableStringify_ACU(right);
+}
 function createEmptyDiff_ACU() {
     return {
         addedSheets: [],
@@ -40403,6 +40568,21 @@ function createEmptyDiff_ACU() {
         patchedExportConfigSheets: [],
         globalInjectionChanged: false,
     };
+}
+function listChangedLeafKeys_ACU(beforeValue, afterValue, prefix = '') {
+    if (isObject_ACU(beforeValue) && isObject_ACU(afterValue)) {
+        const keys = Array.from(new Set([...Object.keys(beforeValue), ...Object.keys(afterValue)])).sort();
+        return keys.flatMap((key) => {
+            const nextPrefix = prefix ? `${prefix}.${key}` : key;
+            const hasBefore = Object.prototype.hasOwnProperty.call(beforeValue, key);
+            const hasAfter = Object.prototype.hasOwnProperty.call(afterValue, key);
+            if (!hasBefore || !hasAfter) {
+                return [nextPrefix];
+            }
+            return listChangedLeafKeys_ACU(beforeValue[key], afterValue[key], nextPrefix);
+        });
+    }
+    return isSameValue_ACU(beforeValue, afterValue) ? [] : (prefix ? [prefix] : []);
 }
 function listPatchLeafKeys_ACU(patch, prefix = '') {
     if (!isObject_ACU(patch))
@@ -40468,6 +40648,16 @@ function getBaseOrderedSheetKeys_ACU(tempData, sheetOrder) {
             order.push(key);
     });
     return order;
+}
+function normalizeFocusSheetKey_ACU(candidateData, orderedSheetKeys, focusSheetKey) {
+    if (focusSheetKey && candidateData[focusSheetKey]) {
+        return focusSheetKey;
+    }
+    return orderedSheetKeys[0] || null;
+}
+function getNormalizedGlobalInjectionConfig_ACU(dataObj) {
+    const rawValue = isObject_ACU(dataObj?.mate) ? dataObj.mate.globalInjectionConfig : undefined;
+    return ensureGlobalInjectionConfigDefaults_ACU(clone_ACU$2(rawValue));
 }
 function buildDefaultUpdateConfig_ACU() {
     return {
@@ -40670,9 +40860,7 @@ function compileTemplateAssistantDraft_ACU(input) {
             candidateData[sheetKey][TABLE_ORDER_FIELD_ACU] = index;
         }
     });
-    if (focusSheetKey && !candidateData[focusSheetKey]) {
-        focusSheetKey = orderedSheetKeys[0] || null;
-    }
+    focusSheetKey = normalizeFocusSheetKey_ACU(candidateData, orderedSheetKeys, focusSheetKey);
     return {
         candidateData,
         orderedSheetKeys,
@@ -40682,9 +40870,110 @@ function compileTemplateAssistantDraft_ACU(input) {
         highRiskItems,
     };
 }
+function buildTemplateAssistantCumulativeCompileResult_ACU(input) {
+    const baselineData = isObject_ACU(input?.baselineData) ? input.baselineData : null;
+    const rawCandidateData = isObject_ACU(input?.candidateData) ? input.candidateData : null;
+    if (!baselineData) {
+        throw new Error('缺少 baselineData');
+    }
+    if (!rawCandidateData) {
+        throw new Error('缺少 candidateData');
+    }
+    const candidateData = clone_ACU$2(rawCandidateData);
+    const baselineOrderedSheetKeys = getBaseOrderedSheetKeys_ACU(baselineData, input.baselineSheetOrder);
+    const orderedSheetKeys = getBaseOrderedSheetKeys_ACU(candidateData, input.candidateSheetOrder);
+    const baselineSheetKeySet = new Set(baselineOrderedSheetKeys);
+    const candidateSheetKeySet = new Set(orderedSheetKeys);
+    const deletedSheetKeys = baselineOrderedSheetKeys.filter((sheetKey) => !candidateSheetKeySet.has(sheetKey));
+    const addedSheetKeys = orderedSheetKeys.filter((sheetKey) => !baselineSheetKeySet.has(sheetKey));
+    const baselineCommonOrderedKeys = baselineOrderedSheetKeys.filter((sheetKey) => candidateSheetKeySet.has(sheetKey));
+    const candidateCommonOrderedKeys = orderedSheetKeys.filter((sheetKey) => baselineSheetKeySet.has(sheetKey));
+    const diff = createEmptyDiff_ACU();
+    const highRiskItems = [];
+    addedSheetKeys.forEach((sheetKey) => {
+        const sheet = candidateData[sheetKey] || {};
+        diff.addedSheets.push({ sheetKey, name: String(sheet.name || sheetKey) });
+    });
+    deletedSheetKeys.forEach((sheetKey) => {
+        const sheet = baselineData[sheetKey] || {};
+        const name = String(sheet.name || sheetKey);
+        diff.deletedSheets.push({ sheetKey, name });
+        highRiskItems.push({ type: 'delete_sheet', label: `删除表: ${name}` });
+    });
+    baselineCommonOrderedKeys.forEach((sheetKey, commonIndex) => {
+        const beforeSheet = baselineData[sheetKey] || {};
+        const afterSheet = candidateData[sheetKey] || {};
+        const beforeName = String(beforeSheet.name || '');
+        const afterName = String(afterSheet.name || '');
+        if (beforeName !== afterName) {
+            diff.renamedSheets.push({ sheetKey, beforeName, afterName });
+        }
+        const candidateCommonIndex = candidateCommonOrderedKeys.indexOf(sheetKey);
+        if (candidateCommonIndex !== commonIndex) {
+            diff.movedSheets.push({
+                sheetKey,
+                name: afterName || beforeName || sheetKey,
+                fromIndex: baselineOrderedSheetKeys.indexOf(sheetKey),
+                toIndex: orderedSheetKeys.indexOf(sheetKey),
+            });
+        }
+        const changedSourceDataKeys = listChangedLeafKeys_ACU(beforeSheet.sourceData, afterSheet.sourceData);
+        if (changedSourceDataKeys.length) {
+            diff.patchedSourceDataSheets.push({ sheetKey, name: afterName || beforeName || sheetKey, keys: changedSourceDataKeys });
+        }
+        const changedUpdateConfigKeys = listChangedLeafKeys_ACU(beforeSheet.updateConfig, afterSheet.updateConfig);
+        if (changedUpdateConfigKeys.length) {
+            diff.patchedUpdateConfigSheets.push({ sheetKey, name: afterName || beforeName || sheetKey, keys: changedUpdateConfigKeys });
+        }
+        const changedExportConfigKeys = listChangedLeafKeys_ACU(beforeSheet.exportConfig, afterSheet.exportConfig);
+        if (changedExportConfigKeys.length) {
+            diff.patchedExportConfigSheets.push({ sheetKey, name: afterName || beforeName || sheetKey, keys: changedExportConfigKeys });
+        }
+    });
+    diff.globalInjectionChanged = !isSameValue_ACU(getNormalizedGlobalInjectionConfig_ACU(baselineData), getNormalizedGlobalInjectionConfig_ACU(candidateData));
+    if (diff.globalInjectionChanged) {
+        highRiskItems.push({ type: 'patch_global_injection_config', label: '修改全局注入配置' });
+    }
+    orderedSheetKeys.forEach((sheetKey, index) => {
+        if (candidateData?.[sheetKey] && typeof candidateData[sheetKey] === 'object') {
+            candidateData[sheetKey][TABLE_ORDER_FIELD_ACU] = index;
+        }
+    });
+    return {
+        candidateData,
+        orderedSheetKeys,
+        deletedSheetKeys,
+        focusSheetKey: normalizeFocusSheetKey_ACU(candidateData, orderedSheetKeys, input.focusSheetKey),
+        diff,
+        highRiskItems,
+    };
+}
 
+class TemplateAssistantSessionStoppedError_ACU extends Error {
+    constructor(stopReason) {
+        super(stopReason === 'cancelled' ? '模板助手会话已取消' : '模板助手会话已过期');
+        this.name = 'TemplateAssistantSessionStoppedError_ACU';
+        this.stopReason = stopReason;
+    }
+}
+const DEFAULT_TEMPLATE_ASSISTANT_MAX_ROUNDS_ACU = 3;
+const DEFAULT_TEMPLATE_ASSISTANT_MAX_REPAIR_RETRIES_ACU = 1;
 function clone_ACU$1(value) {
     return JSON.parse(JSON.stringify(value));
+}
+function normalizePositiveInteger_ACU(value, fallback) {
+    const normalized = Number(value);
+    if (!Number.isFinite(normalized))
+        return fallback;
+    const integer = Math.floor(normalized);
+    return integer > 0 ? integer : fallback;
+}
+function normalizeNonNegativeInteger_ACU(value, fallback) {
+    const normalized = Number(value);
+    if (!Number.isFinite(normalized))
+        return fallback;
+    const integer = Math.floor(normalized);
+    return integer >= 0 ? integer : fallback;
 }
 function asObject_ACU(value, fallback = {}) {
     return value && typeof value === 'object' && !Array.isArray(value) ? value : fallback;
@@ -40703,6 +40992,17 @@ function getSelectedSheetSnapshot_ACU(tempData, sheetKey) {
         sourceData: clone_ACU$1(asObject_ACU(sheet?.sourceData)),
         updateConfig: clone_ACU$1(asObject_ACU(sheet?.updateConfig)),
         exportConfig: clone_ACU$1(asObject_ACU(sheet?.exportConfig)),
+    };
+}
+function buildTemplateAssistantNoopDraft_ACU(baseFingerprint, selectedSheetKey, summary = '', warnings = []) {
+    return {
+        protocolVersion: 1,
+        mode: 'modify_current_template_incremental',
+        baseFingerprint,
+        selectedSheetKey: String(selectedSheetKey || ''),
+        summary,
+        warnings: warnings.map((item) => String(item ?? '')),
+        operations: [],
     };
 }
 function buildSheetSummary_ACU(tempData) {
@@ -40737,6 +41037,16 @@ function buildTemplateAssistantFingerprint_ACU(tempData) {
         }),
     };
     return `acu-struct:${hashUserInput_ACU(safeJsonStringify_ACU(snapshot, '{}'))}`;
+}
+function getTemplateAssistantApplyBaselineFingerprint_ACU(result) {
+    const originalBaseFingerprint = String(result?.originalBaseFingerprint || '').trim();
+    if (originalBaseFingerprint) {
+        return originalBaseFingerprint;
+    }
+    if (Array.isArray(result?.rounds) || !!result?.session) {
+        return '';
+    }
+    return String(result?.draft?.baseFingerprint || '').trim();
 }
 function getLastTaggedDraftText_ACU(aiText) {
     const tagPattern = /<templateAssistantDraft>([\s\S]*?)<\/templateAssistantDraft>/g;
@@ -40863,6 +41173,53 @@ function buildUserPrompt_ACU(input, baseFingerprint) {
     };
     return safeJsonStringify_ACU(payload, '{}');
 }
+function buildSessionRoundUserRequest_ACU(options) {
+    const chunks = [String(options.userRequest || '').trim()];
+    if (options.round > 1) {
+        chunks.push(`补充说明：当前是第 ${options.round}/${options.maxRounds} 轮，输入数据已经包含前面轮次产生的内存草稿结果。请只继续未完成的改动；如果已经无需继续修改，请返回空 operations。`);
+    }
+    if (options.repairReason) {
+        chunks.push(`修复要求：上一轮 assistant 草稿未通过本地校验，原因是：${options.repairReason}。请修复草稿并继续完成需求，仍然只能输出合法 draft JSON。`);
+    }
+    return chunks.filter(Boolean).join('\n\n');
+}
+function getTemplateAssistantSessionAbortReason_ACU(guard) {
+    if (guard?.isCancelled?.())
+        return 'cancelled';
+    if (guard?.isStale?.())
+        return 'stale';
+    return null;
+}
+function assertTemplateAssistantSessionActive_ACU(guard) {
+    const stopReason = getTemplateAssistantSessionAbortReason_ACU(guard);
+    if (stopReason) {
+        throw new TemplateAssistantSessionStoppedError_ACU(stopReason);
+    }
+}
+function createTemplateAssistantSessionGuard_ACU() {
+    let version = 0;
+    let cancelled = false;
+    return {
+        createRunGuard() {
+            const capturedVersion = version;
+            return {
+                isCancelled: () => cancelled,
+                isStale: () => !cancelled && capturedVersion !== version,
+            };
+        },
+        invalidate() {
+            version += 1;
+        },
+        cancel() {
+            cancelled = true;
+            version += 1;
+        },
+        reset() {
+            cancelled = false;
+            version += 1;
+        },
+    };
+}
 async function generateTemplateAssistantDraft_ACU(input) {
     const tempData = asObject_ACU(input?.tempData);
     const userRequest = String(input?.userRequest || '').trim();
@@ -40903,13 +41260,133 @@ async function generateTemplateAssistantDraft_ACU(input) {
         compileResult,
     };
 }
+async function runTemplateAssistantSession_ACU(input) {
+    const tempData = asObject_ACU(input?.tempData);
+    const currentSheetKey = String(input?.currentSheetKey || '').trim();
+    const userRequest = String(input?.userRequest || '').trim();
+    if (!userRequest) {
+        throw new Error('请输入改表需求');
+    }
+    if (!currentSheetKey) {
+        throw new Error('请先选中一个表后再使用 AI 改表助手');
+    }
+    const maxRounds = normalizePositiveInteger_ACU(input?.maxRounds, DEFAULT_TEMPLATE_ASSISTANT_MAX_ROUNDS_ACU);
+    const maxRepairRetries = normalizeNonNegativeInteger_ACU(input?.maxRepairRetries, DEFAULT_TEMPLATE_ASSISTANT_MAX_REPAIR_RETRIES_ACU);
+    const originalTempData = clone_ACU$1(tempData);
+    const originalSheetOrder = Array.isArray(input?.sheetOrder) ? [...input.sheetOrder] : null;
+    const originalBaseFingerprint = buildTemplateAssistantFingerprint_ACU(originalTempData);
+    const fallbackDraft = buildTemplateAssistantNoopDraft_ACU(originalBaseFingerprint, currentSheetKey);
+    const rounds = [];
+    let workingTempData = clone_ACU$1(originalTempData);
+    let workingSheetOrder = Array.isArray(originalSheetOrder) ? [...originalSheetOrder] : null;
+    let workingCurrentSheetKey = currentSheetKey;
+    let workingFingerprint = originalBaseFingerprint;
+    let lastResult = null;
+    let stopReason = 'max_rounds';
+    let repairRetriesUsed = 0;
+    let lastErrorMessage = '';
+    outerLoop: for (let round = 1; round <= maxRounds; round += 1) {
+        let repairReason = '';
+        while (true) {
+            assertTemplateAssistantSessionActive_ACU(input.guard);
+            const roundUserRequest = buildSessionRoundUserRequest_ACU({
+                userRequest,
+                round,
+                maxRounds,
+                repairReason,
+            });
+            try {
+                const result = await generateTemplateAssistantDraft_ACU({
+                    tempData: workingTempData,
+                    currentSheetKey: workingCurrentSheetKey,
+                    sheetOrder: workingSheetOrder,
+                    userRequest: roundUserRequest,
+                });
+                assertTemplateAssistantSessionActive_ACU(input.guard);
+                lastResult = result;
+                const hasOperations = result.draft.operations.length > 0;
+                const nextWorkingTempData = hasOperations ? clone_ACU$1(result.compileResult.candidateData || {}) : clone_ACU$1(workingTempData);
+                const nextWorkingSheetOrder = hasOperations
+                    ? (Array.isArray(result.compileResult.orderedSheetKeys) ? [...result.compileResult.orderedSheetKeys] : [])
+                    : (Array.isArray(workingSheetOrder) ? [...workingSheetOrder] : null);
+                const nextWorkingFingerprint = hasOperations ? buildTemplateAssistantFingerprint_ACU(nextWorkingTempData) : workingFingerprint;
+                rounds.push({
+                    round,
+                    userRequest: roundUserRequest,
+                    draft: result.draft,
+                    aiRawText: result.aiRawText,
+                    messages: result.messages,
+                    perRoundCompileResult: result.compileResult,
+                    workingFingerprint: nextWorkingFingerprint,
+                });
+                if (!hasOperations) {
+                    stopReason = 'empty_operations';
+                    break outerLoop;
+                }
+                workingTempData = nextWorkingTempData;
+                workingSheetOrder = nextWorkingSheetOrder;
+                workingCurrentSheetKey = result.compileResult.focusSheetKey || workingCurrentSheetKey;
+                if (nextWorkingFingerprint === workingFingerprint) {
+                    stopReason = 'repeated_working_fingerprint';
+                    workingFingerprint = nextWorkingFingerprint;
+                    break outerLoop;
+                }
+                workingFingerprint = nextWorkingFingerprint;
+                lastErrorMessage = '';
+                if (round === maxRounds) {
+                    stopReason = 'max_rounds';
+                    break outerLoop;
+                }
+                break;
+            }
+            catch (error) {
+                assertTemplateAssistantSessionActive_ACU(input.guard);
+                lastErrorMessage = error?.message || '未知错误';
+                if (repairRetriesUsed >= maxRepairRetries) {
+                    stopReason = 'repair_retry_capped';
+                    break outerLoop;
+                }
+                repairRetriesUsed += 1;
+                repairReason = lastErrorMessage;
+            }
+        }
+    }
+    const compileResult = buildTemplateAssistantCumulativeCompileResult_ACU({
+        baselineData: originalTempData,
+        baselineSheetOrder: originalSheetOrder,
+        candidateData: workingTempData,
+        candidateSheetOrder: workingSheetOrder,
+        focusSheetKey: workingCurrentSheetKey,
+    });
+    const finalDraft = lastResult?.draft || fallbackDraft;
+    const finalWorkingFingerprint = buildTemplateAssistantFingerprint_ACU(compileResult.candidateData || workingTempData);
+    return {
+        draft: finalDraft,
+        aiRawText: lastResult?.aiRawText || '',
+        messages: lastResult?.messages || [],
+        compileResult,
+        originalBaseFingerprint,
+        rounds,
+        session: {
+            originalBaseFingerprint,
+            finalWorkingFingerprint,
+            stopReason,
+            roundsExecuted: rounds.length,
+            maxRounds,
+            repairRetriesUsed,
+            maxRepairRetries,
+            lastErrorMessage,
+        },
+    };
+}
 
 function clone_ACU(value) {
     return JSON.parse(JSON.stringify(value));
 }
 function applyTemplateAssistantDraftToVisualizer_ACU(result) {
+    const baselineFingerprint = getTemplateAssistantApplyBaselineFingerprint_ACU(result);
     const currentFingerprint = buildTemplateAssistantFingerprint_ACU(_acuVisState.tempData || {});
-    if (currentFingerprint !== result.draft.baseFingerprint) {
+    if (!baselineFingerprint || currentFingerprint !== baselineFingerprint) {
         showToastr_ACU('warning', '当前结构已变化，assistant 草稿已失效，请重新生成。');
         return false;
     }
@@ -40946,11 +41423,37 @@ const assistantUiState_ACU = {
     result: null,
     error: '',
     riskConfirmations: {},
+    expandedRoundIndex: null,
+    guardController: null,
+    runningSessionId: 0,
 };
 function clearAssistantDraftState_ACU() {
     assistantUiState_ACU.result = null;
     assistantUiState_ACU.error = '';
     assistantUiState_ACU.riskConfirmations = {};
+    assistantUiState_ACU.expandedRoundIndex = null;
+}
+function createNewGuardController_ACU() {
+    assistantUiState_ACU.guardController = createTemplateAssistantSessionGuard_ACU();
+    assistantUiState_ACU.runningSessionId += 1;
+}
+function invalidateActiveSession_ACU() {
+    if (assistantUiState_ACU.guardController) {
+        assistantUiState_ACU.guardController.invalidate();
+    }
+    if (assistantUiState_ACU.isGenerating) {
+        assistantUiState_ACU.error = '会话已失效（结构变化或切表）';
+        assistantUiState_ACU.isGenerating = false;
+    }
+    clearAssistantDraftState_ACU();
+}
+function cancelActiveSession_ACU() {
+    if (assistantUiState_ACU.guardController) {
+        assistantUiState_ACU.guardController.cancel();
+    }
+    assistantUiState_ACU.isGenerating = false;
+    assistantUiState_ACU.error = '已取消';
+    renderVisualizerTemplateAssistantPanel_ACU();
 }
 function getRiskConfirmationKey_ACU(index) {
     return String(index);
@@ -40979,11 +41482,76 @@ function buildDiffHtml_ACU(result) {
     sections.push(`<div class="acu-assistant-diff-block"><strong>全局注入配置</strong>${diff.globalInjectionChanged ? '<div>已修改</div>' : '<div class="acu-hint">未修改</div>'}</div>`);
     return sections.join('');
 }
+function buildRoundDiffHtml_ACU(round) {
+    const diff = round.perRoundCompileResult.diff;
+    const sections = [];
+    const renderList = (items) => items.length ? `<ul>${items.map((item) => `<li>${escapeHtml_ACU(item)}</li>`).join('')}</ul>` : '<div class="acu-hint">无</div>';
+    sections.push(`<div class="acu-assistant-diff-block"><strong>新增表</strong>${renderList(diff.addedSheets.map((item) => `${item.name} [${item.sheetKey}]`))}</div>`);
+    sections.push(`<div class="acu-assistant-diff-block"><strong>删除表</strong>${renderList(diff.deletedSheets.map((item) => `${item.name} [${item.sheetKey}]`))}</div>`);
+    sections.push(`<div class="acu-assistant-diff-block"><strong>重命名</strong>${renderList(diff.renamedSheets.map((item) => `${item.beforeName} -> ${item.afterName}`))}</div>`);
+    sections.push(`<div class="acu-assistant-diff-block"><strong>顺序变化</strong>${renderList(diff.movedSheets.map((item) => `${item.name}: ${item.fromIndex} -> ${item.toIndex}`))}</div>`);
+    sections.push(`<div class="acu-assistant-diff-block"><strong>sourceData patch</strong>${renderList(diff.patchedSourceDataSheets.map((item) => `${item.name}: ${item.keys.join(', ') || '字段已修改'}`))}</div>`);
+    sections.push(`<div class="acu-assistant-diff-block"><strong>updateConfig patch</strong>${renderList(diff.patchedUpdateConfigSheets.map((item) => `${item.name}: ${item.keys.join(', ') || '字段已修改'}`))}</div>`);
+    sections.push(`<div class="acu-assistant-diff-block"><strong>exportConfig patch</strong>${renderList(diff.patchedExportConfigSheets.map((item) => `${item.name}: ${item.keys.join(', ') || '字段已修改'}`))}</div>`);
+    sections.push(`<div class="acu-assistant-diff-block"><strong>全局注入配置</strong>${diff.globalInjectionChanged ? '<div>已修改</div>' : '<div class="acu-hint">未修改</div>'}</div>`);
+    return sections.join('');
+}
 function areHighRiskItemsConfirmed_ACU() {
     const result = assistantUiState_ACU.result;
     if (!result)
         return false;
     return result.compileResult.highRiskItems.every((_, index) => assistantUiState_ACU.riskConfirmations[getRiskConfirmationKey_ACU(index)]);
+}
+function renderSessionMetaHtml_ACU(session) {
+    const stopReasonLabels = {
+        max_rounds: '达到最大轮次',
+        empty_operations: 'AI 认为无需继续修改',
+        repeated_working_fingerprint: '结构无变化',
+        repair_retry_capped: '修复失败次数已达上限',
+    };
+    const stopLabel = stopReasonLabels[session.stopReason] || session.stopReason;
+    return `
+        <div class="acu-assistant-session-meta">
+            <span class="acu-assistant-meta-item">轮次: ${session.roundsExecuted}/${session.maxRounds}</span>
+            <span class="acu-assistant-meta-item">结束原因: ${escapeHtml_ACU(stopLabel)}</span>
+            ${session.lastErrorMessage ? `<span class="acu-assistant-meta-item acu-assistant-error-text">最后错误: ${escapeHtml_ACU(session.lastErrorMessage)}</span>` : ''}
+        </div>
+    `;
+}
+function renderRoundHistory_ACU(rounds) {
+    if (!rounds.length)
+        return '';
+    return rounds.map((round, index) => {
+        const isExpanded = assistantUiState_ACU.expandedRoundIndex === index;
+        const roundSummary = round.draft.summary || '(无摘要)';
+        const opCount = round.draft.operations.length;
+        return `
+            <div class="acu-assistant-round-item" data-round-index="${index}">
+                <div class="acu-assistant-round-header">
+                    <span class="acu-assistant-round-badge">第 ${round.round} 轮</span>
+                    <span class="acu-assistant-round-summary">${escapeHtml_ACU(roundSummary)}</span>
+                    <span class="acu-assistant-round-op-count">${opCount} 个操作</span>
+                    <button class="acu-btn-small acu-assistant-round-toggle" data-round-toggle="${index}">
+                        ${isExpanded ? '收起' : '展开'}
+                    </button>
+                </div>
+                ${isExpanded ? `
+                    <div class="acu-assistant-round-detail">
+                        <div class="acu-assistant-section">
+                            <div class="acu-assistant-title">本轮变更 diff</div>
+                            ${buildRoundDiffHtml_ACU(round)}
+                        </div>
+                        ${round.draft.warnings.length ? `
+                            <div class="acu-assistant-section">
+                                <div class="acu-assistant-title">警告</div>
+                                <ul>${round.draft.warnings.map((w) => `<li>${escapeHtml_ACU(w)}</li>`).join('')}</ul>
+                            </div>
+                        ` : ''}
+                    </div>
+                ` : ''}
+            </div>
+        `;
+    }).join('');
 }
 function renderResult_ACU() {
     const result = assistantUiState_ACU.result;
@@ -41005,8 +41573,15 @@ function renderResult_ACU() {
         : '<div class="acu-hint">无高风险操作</div>';
     const applyDisabled = result.compileResult.highRiskItems.length > 0 && !areHighRiskItemsConfirmed_ACU();
     return `
+        ${result.session ? renderSessionMetaHtml_ACU(result.session) : ''}
+        ${result.rounds && result.rounds.length > 1 ? `
+            <div class="acu-assistant-section">
+                <div class="acu-assistant-title">轮次历史</div>
+                ${renderRoundHistory_ACU(result.rounds)}
+            </div>
+        ` : ''}
         <div class="acu-assistant-section">
-            <div class="acu-assistant-title">草稿摘要</div>
+            <div class="acu-assistant-title">最终草稿摘要</div>
             <div>${escapeHtml_ACU(result.draft.summary || '（无摘要）')}</div>
         </div>
         <div class="acu-assistant-section">
@@ -41014,7 +41589,7 @@ function renderResult_ACU() {
             ${warningsHtml}
         </div>
         <div class="acu-assistant-section">
-            <div class="acu-assistant-title">变更 diff</div>
+            <div class="acu-assistant-title">累积变更 diff</div>
             ${buildDiffHtml_ACU(result)}
         </div>
         <div class="acu-assistant-section">
@@ -41035,18 +41610,36 @@ function bindEvents_ACU() {
     });
     $host.find('#acu-vis-assistant-generate').on('click', async () => {
         const requestSheetKey = _acuVisState.currentSheetKey || null;
+        const capturedSessionId = assistantUiState_ACU.runningSessionId + 1;
         try {
             assistantUiState_ACU.isGenerating = true;
             clearAssistantDraftState_ACU();
+            createNewGuardController_ACU();
             renderVisualizerTemplateAssistantPanel_ACU();
-            const result = await generateTemplateAssistantDraft_ACU({
+            const guard = assistantUiState_ACU.guardController.createRunGuard();
+            const result = await runTemplateAssistantSession_ACU({
                 tempData: JSON.parse(JSON.stringify(_acuVisState.tempData || {})),
                 currentSheetKey: requestSheetKey,
                 sheetOrder: Array.isArray(_acuVisState.sheetOrder) ? [..._acuVisState.sheetOrder] : null,
                 userRequest: assistantUiState_ACU.userRequest,
+                guard,
             });
+            // 防护：late async result after stop / stale session / sheet change
+            if (guard.isCancelled?.()) {
+                return;
+            }
+            if (guard.isStale?.()) {
+                assistantUiState_ACU.error = '会话已过期（新会话已启动）';
+                showToastr_ACU('warning', assistantUiState_ACU.error);
+                return;
+            }
             if ((requestSheetKey || null) !== (_acuVisState.currentSheetKey || null)) {
                 assistantUiState_ACU.error = '当前选中表已变化，请重新生成 assistant 草稿。';
+                showToastr_ACU('warning', assistantUiState_ACU.error);
+                return;
+            }
+            if (capturedSessionId !== assistantUiState_ACU.runningSessionId) {
+                assistantUiState_ACU.error = '会话已失效';
                 showToastr_ACU('warning', assistantUiState_ACU.error);
                 return;
             }
@@ -41054,18 +41647,34 @@ function bindEvents_ACU() {
             assistantUiState_ACU.riskConfirmations = {};
         }
         catch (error) {
-            assistantUiState_ACU.error = error?.message || '生成失败';
-            showToastr_ACU('error', assistantUiState_ACU.error);
+            if (error instanceof TemplateAssistantSessionStoppedError_ACU) {
+                assistantUiState_ACU.error = error.message;
+                showToastr_ACU('warning', assistantUiState_ACU.error);
+            }
+            else {
+                assistantUiState_ACU.error = error?.message || '生成失败';
+                showToastr_ACU('error', assistantUiState_ACU.error);
+            }
         }
         finally {
             assistantUiState_ACU.isGenerating = false;
             renderVisualizerTemplateAssistantPanel_ACU();
         }
     });
+    $host.find('#acu-vis-assistant-stop').on('click', () => {
+        cancelActiveSession_ACU();
+    });
     $host.find('.acu-assistant-risk-confirm').on('change', function () {
         const riskKey = String(jQuery_API_ACU(this).data('risk-key') || '');
         assistantUiState_ACU.riskConfirmations[riskKey] = !!jQuery_API_ACU(this).prop('checked');
         renderVisualizerTemplateAssistantPanel_ACU();
+    });
+    $host.find('.acu-assistant-round-toggle').on('click', function () {
+        const roundIndex = Number(jQuery_API_ACU(this).data('round-toggle') || -1);
+        if (roundIndex >= 0) {
+            assistantUiState_ACU.expandedRoundIndex = assistantUiState_ACU.expandedRoundIndex === roundIndex ? null : roundIndex;
+            renderVisualizerTemplateAssistantPanel_ACU();
+        }
     });
     $host.find('#acu-vis-assistant-apply').on('click', () => {
         if (!assistantUiState_ACU.result)
@@ -41081,14 +41690,19 @@ function resetVisualizerTemplateAssistantState_ACU() {
     assistantUiState_ACU.isOpen = false;
     assistantUiState_ACU.userRequest = '';
     assistantUiState_ACU.isGenerating = false;
-    clearAssistantDraftState_ACU();
+    invalidateActiveSession_ACU();
+    assistantUiState_ACU.guardController = null;
     renderVisualizerTemplateAssistantPanel_ACU();
 }
 function handleVisualizerTemplateAssistantSheetChange_ACU() {
     const currentSheetKey = _acuVisState.currentSheetKey || null;
     if (assistantUiState_ACU.result && assistantUiState_ACU.result.draft.selectedSheetKey !== currentSheetKey) {
-        clearAssistantDraftState_ACU();
+        invalidateActiveSession_ACU();
     }
+    renderVisualizerTemplateAssistantPanel_ACU();
+}
+function invalidateVisualizerTemplateAssistantSession_ACU() {
+    invalidateActiveSession_ACU();
     renderVisualizerTemplateAssistantPanel_ACU();
 }
 function setVisualizerTemplateAssistantOpen_ACU(nextOpen) {
@@ -41105,18 +41719,22 @@ function renderVisualizerTemplateAssistantPanel_ACU() {
         return;
     const display = assistantUiState_ACU.isOpen ? 'flex' : 'none';
     const generateDisabled = assistantUiState_ACU.isGenerating || !String(assistantUiState_ACU.userRequest || '').trim();
+    const stopDisabled = !assistantUiState_ACU.isGenerating;
     $host.html(`
-        <div class="acu-vis-assistant-panel" style="display:${display}; flex-direction:column; width:420px; border-left:1px solid var(--vis-border-color); background:var(--vis-bg-secondary, rgba(0,0,0,0.02)); overflow:auto;">
-            <div style="padding:14px 16px; border-bottom:1px solid var(--vis-border-color); display:flex; justify-content:space-between; align-items:center; gap:12px;">
+        <div class="acu-vis-assistant-panel" style="display:${display}; flex-direction:column; width:420px; border-left:1px solid var(--vis-border-color); background:var(--vis-bg-secondary, rgba(0,0,0,0.02)); overflow:hidden; min-height:0;">
+            <div class="acu-vis-assistant-header" style="padding:14px 16px; border-bottom:1px solid var(--vis-border-color); display:flex; justify-content:space-between; align-items:center; gap:12px; flex-shrink:0;">
                 <div>
                     <div style="font-weight:600;">AI 改表助手</div>
                     <div class="acu-hint" style="font-size:12px; margin-top:4px;">当前表：${escapeHtml_ACU(getSelectedSheetLabel_ACU())}</div>
                 </div>
                 <button id="acu-vis-assistant-close" class="acu-btn-secondary">关闭</button>
             </div>
-            <div style="padding:16px; display:flex; flex-direction:column; gap:12px;">
+            <div class="acu-vis-assistant-body" style="flex:1; min-height:0; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:12px;">
                 <textarea id="acu-vis-assistant-input" class="acu-form-textarea" style="min-height:120px;" placeholder="例如：新增一张战利品表，并关闭旧表独立导出。">${escapeHtml_ACU(assistantUiState_ACU.userRequest)}</textarea>
-                <button id="acu-vis-assistant-generate" class="acu-btn-primary" ${generateDisabled ? 'disabled' : ''}>${assistantUiState_ACU.isGenerating ? '生成中...' : '生成草稿'}</button>
+                <div style="display:flex; gap:8px;">
+                    <button id="acu-vis-assistant-generate" class="acu-btn-primary" ${generateDisabled ? 'disabled' : ''}>${assistantUiState_ACU.isGenerating ? '运行中...' : '生成草稿'}</button>
+                    <button id="acu-vis-assistant-stop" class="acu-btn-secondary" ${stopDisabled ? 'disabled' : ''}>停止</button>
+                </div>
                 ${assistantUiState_ACU.error ? `<div style="color:#c55;">${escapeHtml_ACU(assistantUiState_ACU.error)}</div>` : ''}
                 ${renderResult_ACU()}
             </div>
