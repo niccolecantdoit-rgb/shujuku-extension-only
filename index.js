@@ -40333,6 +40333,9 @@ function createEmptyDiff_ACU() {
         patchedSourceDataSheets: [],
         patchedUpdateConfigSheets: [],
         patchedExportConfigSheets: [],
+        patchedContentSheets: [],
+        patchedSchemaSheets: [],
+        patchedLockSheets: [],
         globalInjectionChanged: false,
     };
 }
@@ -40375,7 +40378,9 @@ function ensureSheetExists_ACU(dataObj, sheetKey) {
     }
     return sheet;
 }
-function assertPatchTargetsCurrentSheet_ACU(op, currentSheetKey, selectedSheetKey) {
+function assertPatchTargetsCurrentSheet_ACU(op, currentSheetKey, selectedSheetKey, protocolVersion) {
+    if (protocolVersion !== 1)
+        return;
     const opName = String(op?.op || 'patch_sheet');
     const opSheetKey = String(op?.sheetKey || '');
     if (opSheetKey !== String(selectedSheetKey || '')) {
@@ -40443,7 +40448,8 @@ function buildNewSheet_ACU(op, newKey, orderNo) {
         throw new Error('add_sheet 至少需要一个表头');
     }
     const sourceData = sanitizeAddSheetConfig_ACU(op?.sourceData, buildDefaultSourceData_ACU(), 'sourceData');
-    const updateConfig = sanitizeAddSheetConfig_ACU(op?.updateConfig, buildDefaultUpdateConfig_ACU(), 'updateConfig');
+    const updateConfigRaw = sanitizeAddSheetConfig_ACU(op?.updateConfig, buildDefaultUpdateConfig_ACU(), 'updateConfig');
+    const updateConfig = { ...updateConfigRaw, uiSentinel: -1 };
     const exportConfig = sanitizeAddSheetConfig_ACU(op?.exportConfig, buildDefaultExportConfig_ACU(sheetName), 'exportConfig');
     const sheet = {
         uid: newKey,
@@ -40494,6 +40500,354 @@ function moveSheetAroundAnchor_ACU(orderedSheetKeys, sheetKey, beforeSheetKey, a
     const insertIndex = beforeSheetKey ? nextAnchorIndex : nextAnchorIndex + 1;
     orderedSheetKeys.splice(insertIndex, 0, sheetKey);
 }
+function getSheetHeaderRow_ACU(sheet, sheetKey) {
+    const headerRow = Array.isArray(sheet?.content?.[0]) ? sheet.content[0] : null;
+    if (!headerRow) {
+        throw new Error(`目标表 content 非法: ${sheetKey}`);
+    }
+    return headerRow;
+}
+function getSheetHeaders_ACU(sheet, sheetKey) {
+    return getSheetHeaderRow_ACU(sheet, sheetKey).slice(1).map((item) => String(item ?? '').trim());
+}
+function hasSheetDdl_ACU(sheet) {
+    return typeof sheet?.sourceData?.ddl === 'string' && !!sheet.sourceData.ddl.trim();
+}
+function assertNonEmptyColumnName_ACU(name, label) {
+    const normalized = String(name ?? '').trim();
+    if (!normalized) {
+        throw new Error(`${label} 必须是非空字符串`);
+    }
+    if (normalized === 'row_id') {
+        throw new Error(`${label} 不能为 row_id`);
+    }
+    return normalized;
+}
+function assertHeadersUnique_ACU(headers) {
+    const seen = new Set();
+    headers.forEach((header) => {
+        const normalized = assertNonEmptyColumnName_ACU(header, '列名');
+        if (seen.has(normalized)) {
+            throw new Error(`列名重复: ${normalized}`);
+        }
+        seen.add(normalized);
+    });
+}
+function validateDdlAgainstHeaders_ACU(ddlText, tableHeaders) {
+    const trimmed = String(ddlText || '').trim();
+    if (!trimmed) {
+        return { valid: false, message: '⚠ DDL 为空' };
+    }
+    if (!/CREATE\s+TABLE/i.test(trimmed)) {
+        return { valid: false, message: '✗ 不是有效的 CREATE TABLE 语句' };
+    }
+    if (!/row_id\s+INTEGER\s+PRIMARY\s+KEY/i.test(trimmed)) {
+        return { valid: false, message: '✗ 缺少 row_id INTEGER PRIMARY KEY 列（必须作为第一列）' };
+    }
+    const ddlCols = parseDDLColumnNames(trimmed).filter((item) => item.toLowerCase() !== 'row_id');
+    const mismatch = ddlCols.filter((col) => !tableHeaders.includes(col));
+    const missing = tableHeaders.filter((header) => !ddlCols.includes(header));
+    if (mismatch.length > 0 || missing.length > 0) {
+        let message = '⚠ DDL 列名与表头不完全匹配：';
+        if (mismatch.length > 0)
+            message += `DDL 多出: ${mismatch.join(', ')}；`;
+        if (missing.length > 0)
+            message += `表头多出: ${missing.join(', ')}`;
+        return { valid: false, message };
+    }
+    return { valid: true, message: '✓ DDL 格式正确，列名与表头匹配' };
+}
+function getEffectiveSpecialIndexLockEnabled_ACU(sheetKey, overrides) {
+    if (Object.prototype.hasOwnProperty.call(overrides, sheetKey)) {
+        return overrides[sheetKey];
+    }
+    return isSpecialIndexLockEnabled_ACU(sheetKey);
+}
+function maybeApplySpecialIndexSequenceToSheet_ACU(sheet, sheetKey, overrides) {
+    if (!sheet || !isSummaryOrOutlineTable_ACU(String(sheet?.name || '')))
+        return;
+    if (!getEffectiveSpecialIndexLockEnabled_ACU(sheetKey, overrides))
+        return;
+    const colIndex = getSummaryIndexColumnIndex_ACU(sheet);
+    if (colIndex < 0)
+        return;
+    applySummaryIndexSequenceToTable_ACU(sheet, colIndex);
+}
+function applySheetContentPatch_ACU(sheet, sheetKey, rawPatch) {
+    if (!isObject_ACU(rawPatch)) {
+        throw new Error('patch_sheet_content.patch 必须是对象');
+    }
+    const allowedKeys = new Set(['updateCells', 'addRows', 'deleteRows']);
+    Object.keys(rawPatch).forEach((key) => {
+        if (!allowedKeys.has(key)) {
+            throw new Error(`patch_sheet_content.patch 包含未知字段: ${key}`);
+        }
+    });
+    const headerRow = getSheetHeaderRow_ACU(sheet, sheetKey);
+    const headers = getSheetHeaders_ACU(sheet, sheetKey);
+    const changes = [];
+    const updateCells = Array.isArray(rawPatch.updateCells) ? rawPatch.updateCells : [];
+    const addRows = Array.isArray(rawPatch.addRows) ? rawPatch.addRows : [];
+    const deleteRows = Array.isArray(rawPatch.deleteRows) ? rawPatch.deleteRows : [];
+    updateCells.forEach((cellPatch, index) => {
+        if (!isObject_ACU(cellPatch)) {
+            throw new Error(`patch_sheet_content.updateCells[${index}] 必须是对象`);
+        }
+        const rowNumber = Number(cellPatch.rowNumber);
+        if (!Number.isInteger(rowNumber) || rowNumber <= 0) {
+            throw new Error(`patch_sheet_content.updateCells[${index}].rowNumber 必须是正整数`);
+        }
+        const row = sheet.content[rowNumber];
+        if (!Array.isArray(row)) {
+            throw new Error(`patch_sheet_content.updateCells[${index}] 指向不存在的行: ${rowNumber}`);
+        }
+        const columnName = assertNonEmptyColumnName_ACU(cellPatch.columnName, `patch_sheet_content.updateCells[${index}].columnName`);
+        const colIndex = headers.indexOf(columnName);
+        if (colIndex === -1) {
+            throw new Error(`patch_sheet_content.updateCells[${index}] 指向不存在的列: ${columnName}`);
+        }
+        row[colIndex + 1] = clone_ACU$2(cellPatch.value);
+        changes.push(`改单元格: 第${rowNumber}行.${columnName}`);
+    });
+    const normalizedDeleteRows = Array.from(new Set(deleteRows.map((item) => Number(item)))).sort((a, b) => b - a);
+    normalizedDeleteRows.forEach((rowNumber, index) => {
+        if (!Number.isInteger(rowNumber) || rowNumber <= 0) {
+            throw new Error(`patch_sheet_content.deleteRows[${index}] 必须是正整数`);
+        }
+        if (!Array.isArray(sheet.content[rowNumber])) {
+            throw new Error(`patch_sheet_content.deleteRows[${index}] 指向不存在的行: ${rowNumber}`);
+        }
+    });
+    normalizedDeleteRows.forEach((rowNumber) => {
+        sheet.content.splice(rowNumber, 1);
+    });
+    if (normalizedDeleteRows.length) {
+        changes.push(`删除 ${normalizedDeleteRows.length} 行（第 ${normalizedDeleteRows.slice().sort((a, b) => a - b).join(', ')} 行）`);
+    }
+    addRows.forEach((rowPatch, index) => {
+        if (!isObject_ACU(rowPatch)) {
+            throw new Error(`patch_sheet_content.addRows[${index}] 必须是对象`);
+        }
+        Object.keys(rowPatch).forEach((columnName) => {
+            if (!headers.includes(columnName)) {
+                throw new Error(`patch_sheet_content.addRows[${index}] 包含未知列: ${columnName}`);
+            }
+        });
+        const newRow = new Array(headerRow.length).fill('');
+        newRow[0] = null;
+        headers.forEach((header, headerIndex) => {
+            newRow[headerIndex + 1] = Object.prototype.hasOwnProperty.call(rowPatch, header)
+                ? clone_ACU$2(rowPatch[header])
+                : '';
+        });
+        sheet.content.push(newRow);
+    });
+    if (addRows.length) {
+        changes.push(`新增 ${addRows.length} 行`);
+    }
+    return changes;
+}
+function applySheetSchemaPatch_ACU(sheet, sheetKey, rawPatch) {
+    if (!isObject_ACU(rawPatch)) {
+        throw new Error('patch_sheet_schema.patch 必须是对象');
+    }
+    const allowedKeys = new Set(['renameColumns', 'addColumns', 'deleteColumns', 'ddl']);
+    Object.keys(rawPatch).forEach((key) => {
+        if (!allowedKeys.has(key)) {
+            throw new Error(`patch_sheet_schema.patch 包含未知字段: ${key}`);
+        }
+    });
+    const renameColumns = Array.isArray(rawPatch.renameColumns) ? rawPatch.renameColumns : [];
+    const addColumns = Array.isArray(rawPatch.addColumns) ? rawPatch.addColumns : [];
+    const deleteColumns = Array.isArray(rawPatch.deleteColumns) ? rawPatch.deleteColumns : [];
+    const nextDdl = typeof rawPatch.ddl === 'string' ? rawPatch.ddl.trim() : '';
+    const headerRow = getSheetHeaderRow_ACU(sheet, sheetKey);
+    const changes = [];
+    const highRiskLabels = [];
+    const hasExistingDdl = hasSheetDdl_ACU(sheet);
+    let workingDdl = hasExistingDdl ? String(sheet.sourceData.ddl || '') : '';
+    let ddlChanged = false;
+    if (hasExistingDdl && !nextDdl && (addColumns.length > 0 || deleteColumns.length > 0)) {
+        throw new Error('DDL 表执行增删列时必须同时提供 patch.ddl');
+    }
+    renameColumns.forEach((renamePatch, index) => {
+        if (!isObject_ACU(renamePatch)) {
+            throw new Error(`patch_sheet_schema.renameColumns[${index}] 必须是对象`);
+        }
+        const from = assertNonEmptyColumnName_ACU(renamePatch.from, `patch_sheet_schema.renameColumns[${index}].from`);
+        const to = assertNonEmptyColumnName_ACU(renamePatch.to, `patch_sheet_schema.renameColumns[${index}].to`);
+        const currentHeaders = getSheetHeaders_ACU(sheet, sheetKey);
+        const colIndex = currentHeaders.indexOf(from);
+        if (colIndex === -1) {
+            throw new Error(`patch_sheet_schema.renameColumns[${index}] 指向不存在的列: ${from}`);
+        }
+        if (currentHeaders.includes(to) && from !== to) {
+            throw new Error(`patch_sheet_schema.renameColumns[${index}] 目标列名已存在: ${to}`);
+        }
+        headerRow[colIndex + 1] = to;
+        changes.push(`列改名: ${from} -> ${to}`);
+        if (workingDdl) {
+            const ddlColumns = parseDDLColumnNames(workingDdl);
+            const ddlColumnName = ddlColumns[colIndex + 1];
+            if (ddlColumnName && ddlColumnName !== 'row_id') {
+                workingDdl = updateDDLColumnComment(workingDdl, ddlColumnName, to);
+                ddlChanged = true;
+            }
+        }
+    });
+    const deleteEntries = deleteColumns.map((columnName, index) => ({
+        name: assertNonEmptyColumnName_ACU(columnName, `patch_sheet_schema.deleteColumns[${index}]`),
+    }));
+    const deleteWithIndex = deleteEntries.map((item) => {
+        const currentHeaders = getSheetHeaders_ACU(sheet, sheetKey);
+        const colIndex = currentHeaders.indexOf(item.name);
+        if (colIndex === -1) {
+            throw new Error(`patch_sheet_schema.deleteColumns 指向不存在的列: ${item.name}`);
+        }
+        return { ...item, colIndex };
+    }).sort((left, right) => right.colIndex - left.colIndex);
+    deleteWithIndex.forEach(({ name, colIndex }) => {
+        headerRow.splice(colIndex + 1, 1);
+        sheet.content.slice(1).forEach((row) => {
+            if (Array.isArray(row))
+                row.splice(colIndex + 1, 1);
+        });
+        changes.push(`删除列: ${name}`);
+        highRiskLabels.push(`删除列: ${String(sheet.name || sheetKey)}.${name}`);
+    });
+    addColumns.forEach((columnPatch, index) => {
+        if (!isObject_ACU(columnPatch)) {
+            throw new Error(`patch_sheet_schema.addColumns[${index}] 必须是对象`);
+        }
+        const name = assertNonEmptyColumnName_ACU(columnPatch.name, `patch_sheet_schema.addColumns[${index}].name`);
+        const currentHeaders = getSheetHeaders_ACU(sheet, sheetKey);
+        if (currentHeaders.includes(name)) {
+            throw new Error(`patch_sheet_schema.addColumns[${index}] 目标列名已存在: ${name}`);
+        }
+        headerRow.push(name);
+        sheet.content.slice(1).forEach((row) => {
+            if (Array.isArray(row)) {
+                row.push(Object.prototype.hasOwnProperty.call(columnPatch, 'defaultValue') ? clone_ACU$2(columnPatch.defaultValue) : '');
+            }
+        });
+        changes.push(`新增列: ${name}`);
+    });
+    const finalHeaders = getSheetHeaders_ACU(sheet, sheetKey);
+    assertHeadersUnique_ACU(finalHeaders);
+    if (nextDdl) {
+        const ddlValidation = validateDdlAgainstHeaders_ACU(nextDdl, finalHeaders);
+        if (!ddlValidation.valid) {
+            throw new Error(`patch_sheet_schema.ddl 非法: ${ddlValidation.message}`);
+        }
+        if (!isObject_ACU(sheet.sourceData))
+            sheet.sourceData = {};
+        sheet.sourceData.ddl = nextDdl;
+        ddlChanged = true;
+        changes.push('DDL 已更新');
+        highRiskLabels.push(`更新 DDL: ${String(sheet.name || sheetKey)}`);
+    }
+    else if (workingDdl && ddlChanged) {
+        if (!isObject_ACU(sheet.sourceData))
+            sheet.sourceData = {};
+        sheet.sourceData.ddl = workingDdl;
+        changes.push('DDL 注释已同步');
+    }
+    return {
+        changes,
+        highRiskLabels,
+    };
+}
+function applySheetLockPatch_ACU(sheet, sheetKey, rawPatch) {
+    if (!isObject_ACU(rawPatch)) {
+        throw new Error('patch_sheet_locks.patch 必须是对象');
+    }
+    const allowedKeys = new Set(['rows', 'columns', 'cells', 'specialIndexLocked']);
+    Object.keys(rawPatch).forEach((key) => {
+        if (!allowedKeys.has(key)) {
+            throw new Error(`patch_sheet_locks.patch 包含未知字段: ${key}`);
+        }
+    });
+    const headers = getSheetHeaders_ACU(sheet, sheetKey);
+    const rowCount = Math.max(0, (Array.isArray(sheet?.content) ? sheet.content.length : 0) - 1);
+    const changes = [];
+    const rows = Array.isArray(rawPatch.rows) ? rawPatch.rows : [];
+    const columns = Array.isArray(rawPatch.columns) ? rawPatch.columns : [];
+    const cells = Array.isArray(rawPatch.cells) ? rawPatch.cells : [];
+    const normalized = {
+        sheetKey,
+        rows: [],
+        columns: [],
+        cells: [],
+    };
+    rows.forEach((item, index) => {
+        if (!isObject_ACU(item)) {
+            throw new Error(`patch_sheet_locks.rows[${index}] 必须是对象`);
+        }
+        const rowNumber = Number(item.rowNumber);
+        if (!Number.isInteger(rowNumber) || rowNumber <= 0 || rowNumber > rowCount) {
+            throw new Error(`patch_sheet_locks.rows[${index}] 指向不存在的行: ${rowNumber}`);
+        }
+        if (typeof item.locked !== 'boolean') {
+            throw new Error(`patch_sheet_locks.rows[${index}].locked 必须是布尔值`);
+        }
+        normalized.rows.push({ rowIndex: rowNumber - 1, locked: item.locked });
+        changes.push(`${item.locked ? '锁定' : '解锁'}第${rowNumber}行`);
+    });
+    columns.forEach((item, index) => {
+        if (!isObject_ACU(item)) {
+            throw new Error(`patch_sheet_locks.columns[${index}] 必须是对象`);
+        }
+        const columnName = assertNonEmptyColumnName_ACU(item.columnName, `patch_sheet_locks.columns[${index}].columnName`);
+        const colIndex = headers.indexOf(columnName);
+        if (colIndex === -1) {
+            throw new Error(`patch_sheet_locks.columns[${index}] 指向不存在的列: ${columnName}`);
+        }
+        if (typeof item.locked !== 'boolean') {
+            throw new Error(`patch_sheet_locks.columns[${index}].locked 必须是布尔值`);
+        }
+        normalized.columns.push({ colIndex, locked: item.locked });
+        changes.push(`${item.locked ? '锁定' : '解锁'}列: ${columnName}`);
+    });
+    cells.forEach((item, index) => {
+        if (!isObject_ACU(item)) {
+            throw new Error(`patch_sheet_locks.cells[${index}] 必须是对象`);
+        }
+        const rowNumber = Number(item.rowNumber);
+        if (!Number.isInteger(rowNumber) || rowNumber <= 0 || rowNumber > rowCount) {
+            throw new Error(`patch_sheet_locks.cells[${index}] 指向不存在的行: ${rowNumber}`);
+        }
+        const columnName = assertNonEmptyColumnName_ACU(item.columnName, `patch_sheet_locks.cells[${index}].columnName`);
+        const colIndex = headers.indexOf(columnName);
+        if (colIndex === -1) {
+            throw new Error(`patch_sheet_locks.cells[${index}] 指向不存在的列: ${columnName}`);
+        }
+        if (typeof item.locked !== 'boolean') {
+            throw new Error(`patch_sheet_locks.cells[${index}].locked 必须是布尔值`);
+        }
+        normalized.cells.push({ rowIndex: rowNumber - 1, colIndex, locked: item.locked });
+        changes.push(`${item.locked ? '锁定' : '解锁'}单元格: 第${rowNumber}行.${columnName}`);
+    });
+    if (rawPatch.specialIndexLocked != null) {
+        if (!isSummaryOrOutlineTable_ACU(String(sheet?.name || ''))) {
+            throw new Error('patch_sheet_locks.specialIndexLocked 仅支持纪要/大纲类表格');
+        }
+        if (typeof rawPatch.specialIndexLocked !== 'boolean') {
+            throw new Error('patch_sheet_locks.specialIndexLocked 必须是布尔值');
+        }
+        normalized.specialIndexLocked = rawPatch.specialIndexLocked;
+        changes.push(`${rawPatch.specialIndexLocked ? '启用' : '关闭'}编码索引列特殊锁定`);
+    }
+    return {
+        changes,
+        lockChange: normalized,
+    };
+}
+function hasAnyLockChange_ACU(lockChange) {
+    return lockChange.rows.length > 0
+        || lockChange.columns.length > 0
+        || lockChange.cells.length > 0
+        || typeof lockChange.specialIndexLocked === 'boolean';
+}
 function compileTemplateAssistantDraft_ACU(input) {
     const tempData = isObject_ACU(input?.tempData) ? input.tempData : null;
     if (!tempData) {
@@ -40503,11 +40857,14 @@ function compileTemplateAssistantDraft_ACU(input) {
     if (!draft || !Array.isArray(draft.operations)) {
         throw new Error('缺少合法 draft.operations');
     }
+    const protocolVersion = draft?.protocolVersion === 1 ? 1 : 2;
     const candidateData = clone_ACU$2(tempData);
     const orderedSheetKeys = getBaseOrderedSheetKeys_ACU(candidateData, input.sheetOrder);
     const deletedSheetKeys = [];
     const highRiskItems = [];
+    const lockChanges = [];
     const diff = createEmptyDiff_ACU();
+    const specialIndexLockOverrides = {};
     let focusSheetKey = input?.currentSheetKey || draft?.selectedSheetKey || null;
     draft.operations.forEach((op) => {
         const opName = String(op?.op || '');
@@ -40531,6 +40888,7 @@ function compileTemplateAssistantDraft_ACU(input) {
             sheet.name = afterName;
             ensureSheetExportConfigDefaults_ACU(sheet);
             diff.renamedSheets.push({ sheetKey: op.sheetKey, beforeName, afterName });
+            maybeApplySpecialIndexSequenceToSheet_ACU(sheet, op.sheetKey, specialIndexLockOverrides);
             return;
         }
         if (opName === 'delete_sheet') {
@@ -40558,8 +40916,11 @@ function compileTemplateAssistantDraft_ACU(input) {
             return;
         }
         if (opName === 'patch_sheet_source_data') {
-            assertPatchTargetsCurrentSheet_ACU(op, input?.currentSheetKey, draft?.selectedSheetKey);
+            assertPatchTargetsCurrentSheet_ACU(op, input?.currentSheetKey, draft?.selectedSheetKey, protocolVersion);
             const sheet = ensureSheetExists_ACU(candidateData, op.sheetKey);
+            if (Object.prototype.hasOwnProperty.call(op.patch || {}, 'ddl')) {
+                throw new Error('patch_sheet_source_data 不能直接修改 ddl，请改用 patch_sheet_schema.ddl');
+            }
             if (!isObject_ACU(sheet.sourceData))
                 throw new Error(`目标表 sourceData 非法: ${op.sheetKey}`);
             applyStrictPatch_ACU(sheet.sourceData, isObject_ACU(op.patch) ? op.patch : {});
@@ -40567,21 +40928,55 @@ function compileTemplateAssistantDraft_ACU(input) {
             return;
         }
         if (opName === 'patch_sheet_update_config') {
-            assertPatchTargetsCurrentSheet_ACU(op, input?.currentSheetKey, draft?.selectedSheetKey);
+            assertPatchTargetsCurrentSheet_ACU(op, input?.currentSheetKey, draft?.selectedSheetKey, protocolVersion);
             const sheet = ensureSheetExists_ACU(candidateData, op.sheetKey);
             if (!isObject_ACU(sheet.updateConfig))
                 throw new Error(`目标表 updateConfig 非法: ${op.sheetKey}`);
             applyStrictPatch_ACU(sheet.updateConfig, isObject_ACU(op.patch) ? op.patch : {});
+            sheet.updateConfig.uiSentinel = -1;
             diff.patchedUpdateConfigSheets.push({ sheetKey: op.sheetKey, name: String(sheet.name || op.sheetKey), keys: listPatchLeafKeys_ACU(op.patch) });
             return;
         }
         if (opName === 'patch_sheet_export_config') {
-            assertPatchTargetsCurrentSheet_ACU(op, input?.currentSheetKey, draft?.selectedSheetKey);
+            assertPatchTargetsCurrentSheet_ACU(op, input?.currentSheetKey, draft?.selectedSheetKey, protocolVersion);
             const sheet = ensureSheetExists_ACU(candidateData, op.sheetKey);
             ensureSheetExportConfigDefaults_ACU(sheet);
             applyStrictPatch_ACU(sheet.exportConfig, isObject_ACU(op.patch) ? op.patch : {});
             ensureSheetExportConfigDefaults_ACU(sheet);
             diff.patchedExportConfigSheets.push({ sheetKey: op.sheetKey, name: String(sheet.name || op.sheetKey), keys: listPatchLeafKeys_ACU(op.patch) });
+            return;
+        }
+        if (opName === 'patch_sheet_content') {
+            assertPatchTargetsCurrentSheet_ACU(op, input?.currentSheetKey, draft?.selectedSheetKey, protocolVersion);
+            const sheet = ensureSheetExists_ACU(candidateData, op.sheetKey);
+            const changes = applySheetContentPatch_ACU(sheet, op.sheetKey, op.patch);
+            maybeApplySpecialIndexSequenceToSheet_ACU(sheet, op.sheetKey, specialIndexLockOverrides);
+            diff.patchedContentSheets.push({ sheetKey: op.sheetKey, name: String(sheet.name || op.sheetKey), changes });
+            return;
+        }
+        if (opName === 'patch_sheet_schema') {
+            assertPatchTargetsCurrentSheet_ACU(op, input?.currentSheetKey, draft?.selectedSheetKey, protocolVersion);
+            const sheet = ensureSheetExists_ACU(candidateData, op.sheetKey);
+            const schemaResult = applySheetSchemaPatch_ACU(sheet, op.sheetKey, op.patch);
+            maybeApplySpecialIndexSequenceToSheet_ACU(sheet, op.sheetKey, specialIndexLockOverrides);
+            diff.patchedSchemaSheets.push({ sheetKey: op.sheetKey, name: String(sheet.name || op.sheetKey), changes: schemaResult.changes });
+            schemaResult.highRiskLabels.forEach((label) => {
+                highRiskItems.push({ type: 'patch_sheet_schema', label });
+            });
+            return;
+        }
+        if (opName === 'patch_sheet_locks') {
+            assertPatchTargetsCurrentSheet_ACU(op, input?.currentSheetKey, draft?.selectedSheetKey, protocolVersion);
+            const sheet = ensureSheetExists_ACU(candidateData, op.sheetKey);
+            const lockResult = applySheetLockPatch_ACU(sheet, op.sheetKey, op.patch);
+            if (typeof lockResult.lockChange.specialIndexLocked === 'boolean') {
+                specialIndexLockOverrides[op.sheetKey] = lockResult.lockChange.specialIndexLocked;
+            }
+            maybeApplySpecialIndexSequenceToSheet_ACU(sheet, op.sheetKey, specialIndexLockOverrides);
+            diff.patchedLockSheets.push({ sheetKey: op.sheetKey, name: String(sheet.name || op.sheetKey), changes: lockResult.changes });
+            if (hasAnyLockChange_ACU(lockResult.lockChange)) {
+                lockChanges.push(lockResult.lockChange);
+            }
             return;
         }
         if (opName === 'patch_global_injection_config') {
@@ -40595,7 +40990,7 @@ function compileTemplateAssistantDraft_ACU(input) {
             highRiskItems.push({ type: 'patch_global_injection_config', label: '修改全局注入配置' });
             return;
         }
-        throw new Error(`一期不支持的操作: ${opName}`);
+        throw new Error(`当前协议不支持的操作: ${opName}`);
     });
     orderedSheetKeys.forEach((sheetKey, index) => {
         if (candidateData?.[sheetKey] && typeof candidateData[sheetKey] === 'object') {
@@ -40612,6 +41007,7 @@ function compileTemplateAssistantDraft_ACU(input) {
         focusSheetKey,
         diff,
         highRiskItems,
+        lockChanges,
     };
 }
 
@@ -40624,18 +41020,23 @@ function asObject_ACU(value, fallback = {}) {
 function extractHeaders_ACU(sheet) {
     return Array.isArray(sheet?.content?.[0]) ? sheet.content[0].slice(1).map((item) => String(item ?? '')) : [];
 }
-function getSelectedSheetSnapshot_ACU(tempData, sheetKey) {
-    if (!sheetKey || !tempData?.[sheetKey])
-        return null;
-    const sheet = tempData[sheetKey];
+function getSheetSnapshot_ACU(tempData, sheetKey) {
+    const sheet = tempData?.[sheetKey] || {};
     return {
         sheetKey,
         name: String(sheet?.name || ''),
+        orderNo: Number.isFinite(sheet?.orderNo) ? sheet.orderNo : null,
         headers: extractHeaders_ACU(sheet),
+        content: clone_ACU$1(Array.isArray(sheet?.content) ? sheet.content : []),
         sourceData: clone_ACU$1(asObject_ACU(sheet?.sourceData)),
         updateConfig: clone_ACU$1(asObject_ACU(sheet?.updateConfig)),
         exportConfig: clone_ACU$1(asObject_ACU(sheet?.exportConfig)),
     };
+}
+function getSelectedSheetSnapshot_ACU(tempData, sheetKey) {
+    if (!sheetKey || !tempData?.[sheetKey])
+        return null;
+    return getSheetSnapshot_ACU(tempData, sheetKey);
 }
 function buildSheetSummary_ACU(tempData) {
     const sheetKeys = getSortedSheetKeys_ACU(tempData, { ignoreChatGuide: true });
@@ -40646,8 +41047,12 @@ function buildSheetSummary_ACU(tempData) {
             name: String(sheet.name || ''),
             orderNo: Number.isFinite(sheet.orderNo) ? sheet.orderNo : null,
             headers: extractHeaders_ACU(sheet),
+            rowCount: Math.max(0, (Array.isArray(sheet?.content) ? sheet.content.length : 0) - 1),
         };
     });
+}
+function buildDetailedSheetSnapshots_ACU(tempData) {
+    return buildSheetSummary_ACU(tempData).map((item) => getSheetSnapshot_ACU(tempData, item.sheetKey));
 }
 function buildTemplateAssistantFingerprint_ACU(tempData) {
     const normalized = asObject_ACU(tempData);
@@ -40661,7 +41066,7 @@ function buildTemplateAssistantFingerprint_ACU(tempData) {
                 uid: sheet.uid ?? '',
                 name: sheet.name ?? '',
                 orderNo: sheet.orderNo ?? null,
-                headers: Array.isArray(sheet?.content?.[0]) ? sheet.content[0] : [],
+                content: Array.isArray(sheet?.content) ? sheet.content : [],
                 sourceData: asObject_ACU(sheet.sourceData),
                 updateConfig: asObject_ACU(sheet.updateConfig),
                 exportConfig: asObject_ACU(sheet.exportConfig),
@@ -40689,7 +41094,9 @@ function parseTemplateAssistantDraft_ACU(aiText) {
     }
     return validateTemplateAssistantDraft_ACU(parsed);
 }
-function validatePatchSheetBoundary_ACU(op, selectedSheetKey, currentSheetKey) {
+function validatePatchSheetBoundary_ACU(op, selectedSheetKey, currentSheetKey, protocolVersion) {
+    if (protocolVersion !== 1)
+        return;
     if (op.sheetKey !== selectedSheetKey) {
         throw new Error(`${op.op} 的 sheetKey 必须与 draft.selectedSheetKey 一致`);
     }
@@ -40697,12 +41104,204 @@ function validatePatchSheetBoundary_ACU(op, selectedSheetKey, currentSheetKey) {
         throw new Error(`${op.op} 只能修改当前选中表`);
     }
 }
+function validateTemplateAssistantContentPatch_ACU(op) {
+    const patch = op?.patch;
+    const allowedKeys = new Set(['updateCells', 'addRows', 'deleteRows']);
+    Object.keys(patch).forEach((key) => {
+        if (!allowedKeys.has(key)) {
+            throw new Error(`patch_sheet_content.patch 包含未知字段: ${key}`);
+        }
+    });
+    const updateCells = patch?.updateCells;
+    const addRows = patch?.addRows;
+    const deleteRows = patch?.deleteRows;
+    const hasAnyOperation = (Array.isArray(updateCells) && updateCells.length > 0)
+        || (Array.isArray(addRows) && addRows.length > 0)
+        || (Array.isArray(deleteRows) && deleteRows.length > 0);
+    if (!hasAnyOperation) {
+        throw new Error('patch_sheet_content 至少需要 updateCells、addRows、deleteRows 之一');
+    }
+    if (updateCells != null) {
+        if (!Array.isArray(updateCells)) {
+            throw new Error('patch_sheet_content.patch.updateCells 必须是数组');
+        }
+        updateCells.forEach((item, index) => {
+            if (!item || typeof item !== 'object' || Array.isArray(item)) {
+                throw new Error(`patch_sheet_content.patch.updateCells[${index}] 必须是对象`);
+            }
+            if (!Number.isInteger(item.rowNumber) || item.rowNumber <= 0) {
+                throw new Error(`patch_sheet_content.patch.updateCells[${index}].rowNumber 必须是正整数`);
+            }
+            if (typeof item.columnName !== 'string' || !item.columnName.trim()) {
+                throw new Error(`patch_sheet_content.patch.updateCells[${index}].columnName 必须是非空字符串`);
+            }
+            if (!Object.prototype.hasOwnProperty.call(item, 'value')) {
+                throw new Error(`patch_sheet_content.patch.updateCells[${index}].value 缺失`);
+            }
+        });
+    }
+    if (addRows != null) {
+        if (!Array.isArray(addRows)) {
+            throw new Error('patch_sheet_content.patch.addRows 必须是数组');
+        }
+        addRows.forEach((item, index) => {
+            if (!item || typeof item !== 'object' || Array.isArray(item)) {
+                throw new Error(`patch_sheet_content.patch.addRows[${index}] 必须是对象`);
+            }
+        });
+    }
+    if (deleteRows != null) {
+        if (!Array.isArray(deleteRows)) {
+            throw new Error('patch_sheet_content.patch.deleteRows 必须是数组');
+        }
+        deleteRows.forEach((rowNumber, index) => {
+            if (!Number.isInteger(rowNumber) || rowNumber <= 0) {
+                throw new Error(`patch_sheet_content.patch.deleteRows[${index}] 必须是正整数`);
+            }
+        });
+    }
+}
+function validateTemplateAssistantSchemaPatch_ACU(op) {
+    const patch = op?.patch;
+    const allowedKeys = new Set(['renameColumns', 'addColumns', 'deleteColumns', 'ddl']);
+    Object.keys(patch).forEach((key) => {
+        if (!allowedKeys.has(key)) {
+            throw new Error(`patch_sheet_schema.patch 包含未知字段: ${key}`);
+        }
+    });
+    const renameColumns = patch?.renameColumns;
+    const addColumns = patch?.addColumns;
+    const deleteColumns = patch?.deleteColumns;
+    const ddl = patch?.ddl;
+    const hasAnyOperation = (Array.isArray(renameColumns) && renameColumns.length > 0)
+        || (Array.isArray(addColumns) && addColumns.length > 0)
+        || (Array.isArray(deleteColumns) && deleteColumns.length > 0)
+        || (typeof ddl === 'string' && !!ddl.trim());
+    if (!hasAnyOperation) {
+        throw new Error('patch_sheet_schema 至少需要 renameColumns、addColumns、deleteColumns、ddl 之一');
+    }
+    if (renameColumns != null) {
+        if (!Array.isArray(renameColumns)) {
+            throw new Error('patch_sheet_schema.patch.renameColumns 必须是数组');
+        }
+        renameColumns.forEach((item, index) => {
+            if (!item || typeof item !== 'object' || Array.isArray(item)) {
+                throw new Error(`patch_sheet_schema.patch.renameColumns[${index}] 必须是对象`);
+            }
+            if (typeof item.from !== 'string' || !item.from.trim()) {
+                throw new Error(`patch_sheet_schema.patch.renameColumns[${index}].from 必须是非空字符串`);
+            }
+            if (typeof item.to !== 'string' || !item.to.trim()) {
+                throw new Error(`patch_sheet_schema.patch.renameColumns[${index}].to 必须是非空字符串`);
+            }
+        });
+    }
+    if (addColumns != null) {
+        if (!Array.isArray(addColumns)) {
+            throw new Error('patch_sheet_schema.patch.addColumns 必须是数组');
+        }
+        addColumns.forEach((item, index) => {
+            if (!item || typeof item !== 'object' || Array.isArray(item)) {
+                throw new Error(`patch_sheet_schema.patch.addColumns[${index}] 必须是对象`);
+            }
+            if (typeof item.name !== 'string' || !item.name.trim()) {
+                throw new Error(`patch_sheet_schema.patch.addColumns[${index}].name 必须是非空字符串`);
+            }
+        });
+    }
+    if (deleteColumns != null) {
+        if (!Array.isArray(deleteColumns)) {
+            throw new Error('patch_sheet_schema.patch.deleteColumns 必须是数组');
+        }
+        deleteColumns.forEach((item, index) => {
+            if (typeof item !== 'string' || !item.trim()) {
+                throw new Error(`patch_sheet_schema.patch.deleteColumns[${index}] 必须是非空字符串`);
+            }
+        });
+    }
+    if (ddl != null && (typeof ddl !== 'string' || !ddl.trim())) {
+        throw new Error('patch_sheet_schema.patch.ddl 必须是非空字符串');
+    }
+}
+function validateTemplateAssistantLockPatch_ACU(op) {
+    const patch = op?.patch;
+    const allowedKeys = new Set(['rows', 'columns', 'cells', 'specialIndexLocked']);
+    Object.keys(patch).forEach((key) => {
+        if (!allowedKeys.has(key)) {
+            throw new Error(`patch_sheet_locks.patch 包含未知字段: ${key}`);
+        }
+    });
+    const rows = patch?.rows;
+    const columns = patch?.columns;
+    const cells = patch?.cells;
+    const hasAnyOperation = (Array.isArray(rows) && rows.length > 0)
+        || (Array.isArray(columns) && columns.length > 0)
+        || (Array.isArray(cells) && cells.length > 0)
+        || typeof patch?.specialIndexLocked === 'boolean';
+    if (!hasAnyOperation) {
+        throw new Error('patch_sheet_locks 至少需要 rows、columns、cells、specialIndexLocked 之一');
+    }
+    if (rows != null) {
+        if (!Array.isArray(rows)) {
+            throw new Error('patch_sheet_locks.patch.rows 必须是数组');
+        }
+        rows.forEach((item, index) => {
+            if (!item || typeof item !== 'object' || Array.isArray(item)) {
+                throw new Error(`patch_sheet_locks.patch.rows[${index}] 必须是对象`);
+            }
+            if (!Number.isInteger(item.rowNumber) || item.rowNumber <= 0) {
+                throw new Error(`patch_sheet_locks.patch.rows[${index}].rowNumber 必须是正整数`);
+            }
+            if (typeof item.locked !== 'boolean') {
+                throw new Error(`patch_sheet_locks.patch.rows[${index}].locked 必须是布尔值`);
+            }
+        });
+    }
+    if (columns != null) {
+        if (!Array.isArray(columns)) {
+            throw new Error('patch_sheet_locks.patch.columns 必须是数组');
+        }
+        columns.forEach((item, index) => {
+            if (!item || typeof item !== 'object' || Array.isArray(item)) {
+                throw new Error(`patch_sheet_locks.patch.columns[${index}] 必须是对象`);
+            }
+            if (typeof item.columnName !== 'string' || !item.columnName.trim()) {
+                throw new Error(`patch_sheet_locks.patch.columns[${index}].columnName 必须是非空字符串`);
+            }
+            if (typeof item.locked !== 'boolean') {
+                throw new Error(`patch_sheet_locks.patch.columns[${index}].locked 必须是布尔值`);
+            }
+        });
+    }
+    if (cells != null) {
+        if (!Array.isArray(cells)) {
+            throw new Error('patch_sheet_locks.patch.cells 必须是数组');
+        }
+        cells.forEach((item, index) => {
+            if (!item || typeof item !== 'object' || Array.isArray(item)) {
+                throw new Error(`patch_sheet_locks.patch.cells[${index}] 必须是对象`);
+            }
+            if (!Number.isInteger(item.rowNumber) || item.rowNumber <= 0) {
+                throw new Error(`patch_sheet_locks.patch.cells[${index}].rowNumber 必须是正整数`);
+            }
+            if (typeof item.columnName !== 'string' || !item.columnName.trim()) {
+                throw new Error(`patch_sheet_locks.patch.cells[${index}].columnName 必须是非空字符串`);
+            }
+            if (typeof item.locked !== 'boolean') {
+                throw new Error(`patch_sheet_locks.patch.cells[${index}].locked 必须是布尔值`);
+            }
+        });
+    }
+    if (patch?.specialIndexLocked != null && typeof patch.specialIndexLocked !== 'boolean') {
+        throw new Error('patch_sheet_locks.patch.specialIndexLocked 必须是布尔值');
+    }
+}
 function validateTemplateAssistantDraft_ACU(draft) {
     if (!draft || typeof draft !== 'object') {
         throw new Error('assistant draft 必须是对象');
     }
-    if (draft.protocolVersion !== 1) {
-        throw new Error('assistant draft.protocolVersion 必须为 1');
+    if (draft.protocolVersion !== 1 && draft.protocolVersion !== 2) {
+        throw new Error('assistant draft.protocolVersion 必须为 1 或 2');
     }
     if (draft.mode !== 'modify_current_template_incremental') {
         throw new Error('assistant draft.mode 非法');
@@ -40722,6 +41321,15 @@ function validateTemplateAssistantDraft_ACU(draft) {
     if (!Array.isArray(draft.operations)) {
         throw new Error('assistant draft.operations 必须是数组');
     }
+    const protocolVersion = draft.protocolVersion;
+    if (protocolVersion === 2) {
+        if (typeof draft.requestId !== 'string' || !draft.requestId.trim()) {
+            throw new Error('assistant draft.requestId 必须是非空字符串');
+        }
+        if (draft.atomic !== true) {
+            throw new Error('assistant draft.atomic 目前必须为 true');
+        }
+    }
     draft.operations.forEach((op, index) => {
         if (!op || typeof op !== 'object') {
             throw new Error(`operations[${index}] 必须是对象`);
@@ -40736,12 +41344,13 @@ function validateTemplateAssistantDraft_ACU(draft) {
             'patch_sheet_update_config',
             'patch_sheet_export_config',
             'patch_global_injection_config',
+            ...(protocolVersion === 2 ? ['patch_sheet_content', 'patch_sheet_schema', 'patch_sheet_locks'] : []),
         ]);
         if (!allowedOps.has(opName)) {
-            throw new Error(`operations[${index}] 包含一期不支持的操作: ${opName}`);
+            throw new Error(`operations[${index}] 包含当前协议不支持的操作: ${opName}`);
         }
         if (opName === 'replace_sheet_schema') {
-            throw new Error('一期禁止 replace_sheet_schema');
+            throw new Error('当前协议禁止 replace_sheet_schema');
         }
         if (opName.startsWith('patch_sheet_')) {
             if (typeof op.sheetKey !== 'string' || !op.sheetKey) {
@@ -40751,9 +41360,21 @@ function validateTemplateAssistantDraft_ACU(draft) {
                 throw new Error(`${opName} 缺少合法 patch 对象`);
             }
         }
+        if (opName === 'patch_sheet_source_data' && Object.prototype.hasOwnProperty.call(op.patch || {}, 'ddl')) {
+            throw new Error('patch_sheet_source_data 不能直接修改 ddl，请改用 patch_sheet_schema.ddl');
+        }
+        if (opName === 'patch_sheet_content') {
+            validateTemplateAssistantContentPatch_ACU(op);
+        }
+        if (opName === 'patch_sheet_schema') {
+            validateTemplateAssistantSchemaPatch_ACU(op);
+        }
+        if (opName === 'patch_sheet_locks') {
+            validateTemplateAssistantLockPatch_ACU(op);
+        }
     });
-    return {
-        protocolVersion: 1,
+    const normalizedBase = {
+        protocolVersion,
         mode: 'modify_current_template_incremental',
         baseFingerprint: draft.baseFingerprint,
         selectedSheetKey: String(draft.selectedSheetKey || ''),
@@ -40761,36 +41382,58 @@ function validateTemplateAssistantDraft_ACU(draft) {
         warnings: draft.warnings.map((item) => String(item ?? '')),
         operations: draft.operations.map((item) => clone_ACU$1(item)),
     };
+    if (protocolVersion === 2) {
+        return {
+            ...normalizedBase,
+            protocolVersion: 2,
+            requestId: String(draft.requestId || ''),
+            atomic: true,
+        };
+    }
+    return {
+        ...normalizedBase,
+        protocolVersion: 1,
+    };
 }
 function buildSystemPrompt_ACU() {
     return [
         '你是 visualizer 内的模板改表助手。',
         '你只能输出一个被 <templateAssistantDraft> 和 </templateAssistantDraft> 包裹的 JSON 对象，不能输出解释文本。',
-        '严格只允许以下操作：add_sheet、rename_sheet、delete_sheet、move_sheet、patch_sheet_source_data、patch_sheet_update_config、patch_sheet_export_config、patch_global_injection_config。',
-        '严格禁止 replace_sheet_schema、任何现有表结构重建、任何数据行内容改写、任何跨表迁移、任何直接保存行为。',
-        'patch_sheet_source_data / patch_sheet_update_config / patch_sheet_export_config 只能作用于当前选中表，并且 op.sheetKey 必须与顶层 selectedSheetKey 完全一致。',
+        '严格使用 protocolVersion=2、mode="modify_current_template_incremental"、atomic=true。',
+        '严格只允许以下操作：add_sheet、rename_sheet、delete_sheet、move_sheet、patch_sheet_source_data、patch_sheet_update_config、patch_sheet_export_config、patch_sheet_content、patch_sheet_schema、patch_sheet_locks、patch_global_injection_config。',
+        '严格禁止任何直接保存行为。',
+        'patch_sheet_source_data 不能修改 ddl；DDL 只能通过 patch_sheet_schema.patch.ddl 修改。',
+        'patch_sheet_content.patch 只允许使用 updateCells、addRows、deleteRows；其中 rowNumber 必须使用 1-based 行号，列使用 columnName。',
+        'patch_sheet_schema.patch 只允许使用 renameColumns、addColumns、deleteColumns、ddl。',
+        'patch_sheet_locks.patch 只允许使用 rows、columns、cells、specialIndexLocked；rows/cells 使用 1-based rowNumber，列使用 columnName，所有锁变更都必须显式给出 locked 布尔值。',
         'move_sheet 只能提供 beforeSheetKey 或 afterSheetKey 之一。',
         'add_sheet 不要生成最终 sheetKey，本地会自动生成。',
-        'patch 对象只能填写当前结构里真实存在的字段，不要猜测未知字段。',
-        '顶层 JSON 必须包含 protocolVersion=1、mode="modify_current_template_incremental"、baseFingerprint、selectedSheetKey、summary、warnings、operations。',
+        'patch 对象只能填写当前结构里真实存在的字段、表头和表格，不要猜测未知字段。',
+        '顶层 JSON 必须包含 protocolVersion、mode、requestId、baseFingerprint、atomic、selectedSheetKey、summary、warnings、operations。',
         'warnings 必须是字符串数组；没有则输出空数组。',
     ].join('\n');
 }
 function buildUserPrompt_ACU(input, baseFingerprint) {
     const tempData = input.tempData;
-    const selectedSheet = getSelectedSheetSnapshot_ACU(tempData, input.currentSheetKey);
     const payload = {
         userRequest: String(input.userRequest || '').trim(),
         baseFingerprint,
+        selectedSheetKey: input.currentSheetKey || '',
+        selectedSheet: getSelectedSheetSnapshot_ACU(tempData, input.currentSheetKey),
         sheetCount: buildSheetSummary_ACU(tempData).length,
-        allSheets: buildSheetSummary_ACU(tempData),
-        selectedSheet,
+        allSheets: buildDetailedSheetSnapshots_ACU(tempData),
         globalInjectionConfig: getGlobalInjectionConfigFromData_ACU(tempData, { ensureWriteBack: false }),
         constraints: {
-            selectedSheetKey: input.currentSheetKey || '',
-            patchOnlyCurrentSheet: true,
-            forbidSchemaReplace: true,
-            forbidDataRowRewrite: true,
+            protocolVersion: 2,
+            requestIdRequired: true,
+            atomicOnly: true,
+            allowCrossSheetPatch: true,
+            patchSourceDataForbidDdl: true,
+            allowStructuredContentPatch: true,
+            allowStructuredSchemaPatch: true,
+            allowStructuredLockPatch: true,
+            contentPatchRowNumberBase: 1,
+            lockPatchRowNumberBase: 1,
         },
     };
     return safeJsonStringify_ACU(payload, '{}');
@@ -40819,7 +41462,7 @@ async function generateTemplateAssistantDraft_ACU(input) {
     }
     draft.operations.forEach((op) => {
         if (String(op?.op || '').startsWith('patch_sheet_')) {
-            validatePatchSheetBoundary_ACU(op, draft.selectedSheetKey, input.currentSheetKey);
+            validatePatchSheetBoundary_ACU(op, draft.selectedSheetKey, input.currentSheetKey, draft.protocolVersion);
         }
     });
     const compileResult = compileTemplateAssistantDraft_ACU({
@@ -40855,6 +41498,32 @@ function applyTemplateAssistantDraftToVisualizer_ACU(result) {
     _acuVisState.sheetOrder = nextSheetOrder;
     applySheetOrderNumbers_ACU(_acuVisState.tempData, _acuVisState.sheetOrder);
     _acuVisState.deletedSheetKeys = Array.from(nextDeletedKeys);
+    (result.compileResult.lockChanges || []).forEach((change) => {
+        const currentLockState = getTableLocksForSheet_ACU(change.sheetKey);
+        (change.rows || []).forEach((item) => {
+            if (item.locked)
+                currentLockState.rows.add(item.rowIndex);
+            else
+                currentLockState.rows.delete(item.rowIndex);
+        });
+        (change.columns || []).forEach((item) => {
+            if (item.locked)
+                currentLockState.cols.add(item.colIndex);
+            else
+                currentLockState.cols.delete(item.colIndex);
+        });
+        (change.cells || []).forEach((item) => {
+            const key = `${item.rowIndex}:${item.colIndex}`;
+            if (item.locked)
+                currentLockState.cells.add(key);
+            else
+                currentLockState.cells.delete(key);
+        });
+        saveTableLocksForSheet_ACU(change.sheetKey, currentLockState);
+        if (typeof change.specialIndexLocked === 'boolean') {
+            setSpecialIndexLockEnabled_ACU(change.sheetKey, change.specialIndexLocked);
+        }
+    });
     const currentSheetKey = _acuVisState.currentSheetKey;
     if (currentSheetKey && _acuVisState.tempData?.[currentSheetKey]) {
         _acuVisState.currentSheetKey = currentSheetKey;
@@ -40875,14 +41544,13 @@ const assistantUiState_ACU = {
     isOpen: false,
     userRequest: '',
     isGenerating: false,
-    result: null,
-    error: '',
-    riskConfirmations: {},
+    transcript: [],
 };
+function generateTurnId_ACU() {
+    return `turn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
 function clearAssistantDraftState_ACU() {
-    assistantUiState_ACU.result = null;
-    assistantUiState_ACU.error = '';
-    assistantUiState_ACU.riskConfirmations = {};
+    assistantUiState_ACU.transcript = [];
 }
 function getRiskConfirmationKey_ACU(index) {
     return String(index);
@@ -40897,6 +41565,39 @@ function getSelectedSheetLabel_ACU() {
         return '当前未选中表';
     return `${sheet.name || sheetKey} (${sheetKey})`;
 }
+function countDiffChanges_ACU(diff) {
+    let count = 0;
+    count += diff.addedSheets.length;
+    count += diff.deletedSheets.length;
+    count += diff.renamedSheets.length;
+    count += diff.movedSheets.length;
+    count += diff.patchedSourceDataSheets.length;
+    count += diff.patchedUpdateConfigSheets.length;
+    count += diff.patchedExportConfigSheets.length;
+    count += (diff.patchedContentSheets || []).length;
+    count += (diff.patchedSchemaSheets || []).length;
+    count += (diff.patchedLockSheets || []).length;
+    if (diff.globalInjectionChanged)
+        count += 1;
+    return count;
+}
+function buildDiffSummary_ACU(diff) {
+    const parts = [];
+    if (diff.addedSheets.length)
+        parts.push(`新增${diff.addedSheets.length}表`);
+    if (diff.deletedSheets.length)
+        parts.push(`删除${diff.deletedSheets.length}表`);
+    if (diff.renamedSheets.length)
+        parts.push(`重命名${diff.renamedSheets.length}表`);
+    if (diff.movedSheets.length)
+        parts.push(`移动${diff.movedSheets.length}表`);
+    const patchCount = diff.patchedSourceDataSheets.length + diff.patchedUpdateConfigSheets.length + diff.patchedExportConfigSheets.length + (diff.patchedContentSheets || []).length + (diff.patchedSchemaSheets || []).length + (diff.patchedLockSheets || []).length;
+    if (patchCount)
+        parts.push(`修改${patchCount}处`);
+    if (diff.globalInjectionChanged)
+        parts.push('全局配置变更');
+    return parts.length ? parts.join('、') : '无变更';
+}
 function buildDiffHtml_ACU(result) {
     const diff = result.compileResult.diff;
     const sections = [];
@@ -40908,55 +41609,118 @@ function buildDiffHtml_ACU(result) {
     sections.push(`<div class="acu-assistant-diff-block"><strong>sourceData patch</strong>${renderList(diff.patchedSourceDataSheets.map((item) => `${item.name}: ${item.keys.join(', ') || '字段已修改'}`))}</div>`);
     sections.push(`<div class="acu-assistant-diff-block"><strong>updateConfig patch</strong>${renderList(diff.patchedUpdateConfigSheets.map((item) => `${item.name}: ${item.keys.join(', ') || '字段已修改'}`))}</div>`);
     sections.push(`<div class="acu-assistant-diff-block"><strong>exportConfig patch</strong>${renderList(diff.patchedExportConfigSheets.map((item) => `${item.name}: ${item.keys.join(', ') || '字段已修改'}`))}</div>`);
+    sections.push(`<div class="acu-assistant-diff-block"><strong>content patch</strong>${renderList((diff.patchedContentSheets || []).map((item) => `${item.name}: ${item.changes.join('；') || '内容已修改'}`))}</div>`);
+    sections.push(`<div class="acu-assistant-diff-block"><strong>schema patch</strong>${renderList((diff.patchedSchemaSheets || []).map((item) => `${item.name}: ${item.changes.join('；') || '结构已修改'}`))}</div>`);
+    sections.push(`<div class="acu-assistant-diff-block"><strong>locks patch</strong>${renderList((diff.patchedLockSheets || []).map((item) => `${item.name}: ${item.changes.join('；') || '锁状态已修改'}`))}</div>`);
     sections.push(`<div class="acu-assistant-diff-block"><strong>全局注入配置</strong>${diff.globalInjectionChanged ? '<div>已修改</div>' : '<div class="acu-hint">未修改</div>'}</div>`);
     return sections.join('');
 }
-function areHighRiskItemsConfirmed_ACU() {
-    const result = assistantUiState_ACU.result;
-    if (!result)
-        return false;
-    return result.compileResult.highRiskItems.every((_, index) => assistantUiState_ACU.riskConfirmations[getRiskConfirmationKey_ACU(index)]);
+function areHighRiskItemsConfirmed_ACU(turn) {
+    return turn.result.compileResult.highRiskItems.every((_, index) => turn.riskConfirmations[getRiskConfirmationKey_ACU(index)]);
 }
-function renderResult_ACU() {
-    const result = assistantUiState_ACU.result;
-    if (!result)
-        return '';
-    const warningsHtml = result.draft.warnings.length
+function renderCollapsedSection_ACU(title, summary, sectionKey, expanded, detailContent) {
+    const expandIcon = expanded ? '▼' : '▶';
+    const detailStyle = expanded ? '' : 'display:none;';
+    return `
+        <div class="acu-collapsible-section" data-section-key="${escapeHtml_ACU(sectionKey)}">
+            <div class="acu-collapsed-summary" data-section-key="${escapeHtml_ACU(sectionKey)}">
+                <span class="acu-expand-toggle" data-section-key="${escapeHtml_ACU(sectionKey)}">${expandIcon}</span>
+                <span class="acu-summary-title">${escapeHtml_ACU(title)}</span>
+                <span class="acu-summary-text">${escapeHtml_ACU(summary)}</span>
+            </div>
+            <div class="acu-detail-block" data-section-key="${escapeHtml_ACU(sectionKey)}" style="${detailStyle}">
+                ${detailContent}
+            </div>
+        </div>
+    `;
+}
+function renderAssistantTurn_ACU(turn, isLatest) {
+    const result = turn.result;
+    const warningsSummary = result.draft.warnings.length > 0
+        ? `${result.draft.warnings.length}条警告`
+        : '无警告';
+    const diffSummary = buildDiffSummary_ACU(result.compileResult.diff);
+    const riskSummary = result.compileResult.highRiskItems.length > 0
+        ? `${result.compileResult.highRiskItems.length}项需确认`
+        : '无高风险';
+    const warningsDetail = result.draft.warnings.length
         ? `<ul>${result.draft.warnings.map((item) => `<li>${escapeHtml_ACU(item)}</li>`).join('')}</ul>`
         : '<div class="acu-hint">无</div>';
-    const riskHtml = result.compileResult.highRiskItems.length
+    const riskDetail = result.compileResult.highRiskItems.length
         ? result.compileResult.highRiskItems.map((item, index) => {
             const riskKey = getRiskConfirmationKey_ACU(index);
             return `
-            <label class="acu-assistant-risk-item">
-                <input type="checkbox" class="acu-assistant-risk-confirm" data-risk-key="${escapeHtml_ACU(riskKey)}" ${assistantUiState_ACU.riskConfirmations[riskKey] ? 'checked' : ''}>
-                <span>${escapeHtml_ACU(item.label)}</span>
-            </label>
-        `;
+                <label class="acu-assistant-risk-item">
+                    <input type="checkbox" class="acu-assistant-risk-confirm" data-turn-id="${escapeHtml_ACU(turn.id)}" data-risk-key="${escapeHtml_ACU(riskKey)}" ${turn.riskConfirmations[riskKey] ? 'checked' : ''}>
+                    <span>${escapeHtml_ACU(item.label)}</span>
+                </label>
+            `;
         }).join('')
         : '<div class="acu-hint">无高风险操作</div>';
-    const applyDisabled = result.compileResult.highRiskItems.length > 0 && !areHighRiskItemsConfirmed_ACU();
+    const applyDisabled = result.compileResult.highRiskItems.length > 0 && !areHighRiskItemsConfirmed_ACU(turn);
+    const applyHtml = isLatest
+        ? `<button id="acu-vis-assistant-apply" class="acu-btn-primary" data-turn-id="${escapeHtml_ACU(turn.id)}" ${applyDisabled ? 'disabled' : ''}>应用到编辑器</button>`
+        : '';
     return `
-        <div class="acu-assistant-section">
-            <div class="acu-assistant-title">草稿摘要</div>
-            <div>${escapeHtml_ACU(result.draft.summary || '（无摘要）')}</div>
-        </div>
-        <div class="acu-assistant-section">
-            <div class="acu-assistant-title">警告</div>
-            ${warningsHtml}
-        </div>
-        <div class="acu-assistant-section">
-            <div class="acu-assistant-title">变更 diff</div>
-            ${buildDiffHtml_ACU(result)}
-        </div>
-        <div class="acu-assistant-section">
-            <div class="acu-assistant-title">高风险确认</div>
-            <div class="acu-assistant-risk-list">${riskHtml}</div>
-        </div>
-        <div class="acu-assistant-actions-row">
-            <button id="acu-vis-assistant-apply" class="acu-btn-primary" ${applyDisabled ? 'disabled' : ''}>应用到编辑器</button>
+        <div class="acu-chat-turn acu-chat-turn-assistant" data-turn-id="${escapeHtml_ACU(turn.id)}">
+            <div class="acu-chat-turn-header">
+                <span class="acu-chat-turn-avatar">🤖</span>
+                <span class="acu-chat-turn-label">AI 助手</span>
+            </div>
+            <div class="acu-chat-turn-content">
+                <div class="acu-assistant-summary">${escapeHtml_ACU(result.draft.summary || '（无摘要）')}</div>
+                ${renderCollapsedSection_ACU('警告', warningsSummary, 'warnings', turn.expandedSections.warnings || false, warningsDetail)}
+                ${renderCollapsedSection_ACU('变更', diffSummary, 'diff', turn.expandedSections.diff || false, buildDiffHtml_ACU(result))}
+                ${renderCollapsedSection_ACU('高风险', riskSummary, 'risk', turn.expandedSections.risk || false, `<div class="acu-assistant-risk-list">${riskDetail}</div>`)}
+                ${applyHtml ? `<div class="acu-assistant-actions-row">${applyHtml}</div>` : ''}
+            </div>
         </div>
     `;
+}
+function renderErrorTurn_ACU(turn) {
+    return `
+        <div class="acu-chat-turn acu-chat-turn-error" data-turn-id="${escapeHtml_ACU(turn.id)}">
+            <div class="acu-chat-turn-header">
+                <span class="acu-chat-turn-avatar">⚠️</span>
+                <span class="acu-chat-turn-label">错误</span>
+            </div>
+            <div class="acu-chat-turn-content">
+                <div class="acu-error-message">${escapeHtml_ACU(turn.errorMessage)}</div>
+            </div>
+        </div>
+    `;
+}
+function renderUserTurn_ACU(turn) {
+    return `
+        <div class="acu-chat-turn acu-chat-turn-user" data-turn-id="${escapeHtml_ACU(turn.id)}">
+            <div class="acu-chat-turn-header">
+                <span class="acu-chat-turn-label">你</span>
+                <span class="acu-chat-turn-avatar">👤</span>
+            </div>
+            <div class="acu-chat-turn-content">
+                ${escapeHtml_ACU(turn.content)}
+            </div>
+        </div>
+    `;
+}
+function renderTranscript_ACU() {
+    const transcript = assistantUiState_ACU.transcript;
+    if (transcript.length === 0)
+        return '';
+    const html = transcript.map((turn, index) => {
+        const isLatest = index === transcript.length - 1;
+        switch (turn.type) {
+            case 'user':
+                return renderUserTurn_ACU(turn);
+            case 'assistant':
+                return renderAssistantTurn_ACU(turn, isLatest);
+            case 'error':
+                return renderErrorTurn_ACU(turn);
+            default:
+                return '';
+        }
+    }).join('');
+    return `<div class="acu-chat-transcript">${html}</div>`;
 }
 function bindEvents_ACU() {
     const $host = getHost_ACU();
@@ -40964,45 +41728,100 @@ function bindEvents_ACU() {
         return;
     $host.find('#acu-vis-assistant-input').on('input', function () {
         assistantUiState_ACU.userRequest = String(jQuery_API_ACU(this).val() || '');
+        // 更新按钮的disabled状态，避免重新渲染导致焦点丢失
+        const generateDisabled = assistantUiState_ACU.isGenerating || !String(assistantUiState_ACU.userRequest || '').trim();
+        const $btn = $host.find('#acu-vis-assistant-generate');
+        if ($btn.length) {
+            $btn.prop('disabled', generateDisabled);
+        }
     });
     $host.find('#acu-vis-assistant-generate').on('click', async () => {
         const requestSheetKey = _acuVisState.currentSheetKey || null;
+        const userRequest = assistantUiState_ACU.userRequest.trim();
+        if (!userRequest)
+            return;
+        // 立即添加用户轮次
+        const userTurn = {
+            type: 'user',
+            id: generateTurnId_ACU(),
+            content: userRequest,
+            timestamp: Date.now(),
+        };
+        assistantUiState_ACU.transcript.push(userTurn);
         try {
             assistantUiState_ACU.isGenerating = true;
-            clearAssistantDraftState_ACU();
+            assistantUiState_ACU.userRequest = '';
             renderVisualizerTemplateAssistantPanel_ACU();
             const result = await generateTemplateAssistantDraft_ACU({
                 tempData: JSON.parse(JSON.stringify(_acuVisState.tempData || {})),
                 currentSheetKey: requestSheetKey,
                 sheetOrder: Array.isArray(_acuVisState.sheetOrder) ? [..._acuVisState.sheetOrder] : null,
-                userRequest: assistantUiState_ACU.userRequest,
+                userRequest: userRequest,
             });
             if ((requestSheetKey || null) !== (_acuVisState.currentSheetKey || null)) {
-                assistantUiState_ACU.error = '当前选中表已变化，请重新生成 assistant 草稿。';
-                showToastr_ACU('warning', assistantUiState_ACU.error);
+                const errorTurn = {
+                    type: 'error',
+                    id: generateTurnId_ACU(),
+                    errorMessage: '当前选中表已变化，请重新生成 assistant 草稿。',
+                    timestamp: Date.now(),
+                };
+                assistantUiState_ACU.transcript.push(errorTurn);
+                showToastr_ACU('warning', errorTurn.errorMessage);
+                renderVisualizerTemplateAssistantPanel_ACU();
                 return;
             }
-            assistantUiState_ACU.result = result;
-            assistantUiState_ACU.riskConfirmations = {};
+            const assistantTurn = {
+                type: 'assistant',
+                id: generateTurnId_ACU(),
+                result: result,
+                riskConfirmations: {},
+                expandedSections: {},
+                timestamp: Date.now(),
+            };
+            assistantUiState_ACU.transcript.push(assistantTurn);
         }
         catch (error) {
-            assistantUiState_ACU.error = error?.message || '生成失败';
-            showToastr_ACU('error', assistantUiState_ACU.error);
+            const errorTurn = {
+                type: 'error',
+                id: generateTurnId_ACU(),
+                errorMessage: error?.message || '生成失败',
+                timestamp: Date.now(),
+            };
+            assistantUiState_ACU.transcript.push(errorTurn);
+            showToastr_ACU('error', errorTurn.errorMessage);
         }
         finally {
             assistantUiState_ACU.isGenerating = false;
             renderVisualizerTemplateAssistantPanel_ACU();
         }
     });
+    $host.find('.acu-expand-toggle').on('click', function () {
+        const sectionKey = String(jQuery_API_ACU(this).data('section-key') || '');
+        // 找到对应的assistant turn
+        const $section = jQuery_API_ACU(this).closest('.acu-collapsible-section');
+        const $turn = jQuery_API_ACU(this).closest('.acu-chat-turn-assistant');
+        const turnId = $turn.data('turn-id');
+        const turn = assistantUiState_ACU.transcript.find(t => t.id === turnId && t.type === 'assistant');
+        if (turn) {
+            turn.expandedSections[sectionKey] = !turn.expandedSections[sectionKey];
+            renderVisualizerTemplateAssistantPanel_ACU();
+        }
+    });
     $host.find('.acu-assistant-risk-confirm').on('change', function () {
         const riskKey = String(jQuery_API_ACU(this).data('risk-key') || '');
-        assistantUiState_ACU.riskConfirmations[riskKey] = !!jQuery_API_ACU(this).prop('checked');
-        renderVisualizerTemplateAssistantPanel_ACU();
+        const turnId = String(jQuery_API_ACU(this).data('turn-id') || '');
+        const turn = assistantUiState_ACU.transcript.find(t => t.id === turnId && t.type === 'assistant');
+        if (turn) {
+            turn.riskConfirmations[riskKey] = !!jQuery_API_ACU(this).prop('checked');
+            renderVisualizerTemplateAssistantPanel_ACU();
+        }
     });
-    $host.find('#acu-vis-assistant-apply').on('click', () => {
-        if (!assistantUiState_ACU.result)
+    $host.find('#acu-vis-assistant-apply').on('click', function () {
+        const turnId = String(jQuery_API_ACU(this).data('turn-id') || '');
+        const turn = assistantUiState_ACU.transcript.find(t => t.id === turnId && t.type === 'assistant');
+        if (!turn)
             return;
-        const applied = applyTemplateAssistantDraftToVisualizer_ACU(assistantUiState_ACU.result);
+        const applied = applyTemplateAssistantDraftToVisualizer_ACU(turn.result);
         if (!applied)
             return;
         clearAssistantDraftState_ACU();
@@ -41018,7 +41837,11 @@ function resetVisualizerTemplateAssistantState_ACU() {
 }
 function handleVisualizerTemplateAssistantSheetChange_ACU() {
     const currentSheetKey = _acuVisState.currentSheetKey || null;
-    if (assistantUiState_ACU.result && assistantUiState_ACU.result.draft.selectedSheetKey !== currentSheetKey) {
+    // 检查最新的assistant轮次是否是v1且需要清除
+    const lastAssistantTurn = [...assistantUiState_ACU.transcript].reverse().find(t => t.type === 'assistant');
+    if (lastAssistantTurn
+        && lastAssistantTurn.result.draft.protocolVersion === 1
+        && lastAssistantTurn.result.draft.selectedSheetKey !== currentSheetKey) {
         clearAssistantDraftState_ACU();
     }
     renderVisualizerTemplateAssistantPanel_ACU();
@@ -41046,11 +41869,12 @@ function renderVisualizerTemplateAssistantPanel_ACU() {
                 </div>
                 <button id="acu-vis-assistant-close" class="acu-btn-secondary">关闭</button>
             </div>
-            <div style="padding:16px; display:flex; flex-direction:column; gap:12px;">
-                <textarea id="acu-vis-assistant-input" class="acu-form-textarea" style="min-height:120px;" placeholder="例如：新增一张战利品表，并关闭旧表独立导出。">${escapeHtml_ACU(assistantUiState_ACU.userRequest)}</textarea>
-                <button id="acu-vis-assistant-generate" class="acu-btn-primary" ${generateDisabled ? 'disabled' : ''}>${assistantUiState_ACU.isGenerating ? '生成中...' : '生成草稿'}</button>
-                ${assistantUiState_ACU.error ? `<div style="color:#c55;">${escapeHtml_ACU(assistantUiState_ACU.error)}</div>` : ''}
-                ${renderResult_ACU()}
+            <div class="acu-chat-container" style="flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:12px;">
+                ${renderTranscript_ACU()}
+            </div>
+            <div style="padding:16px; border-top:1px solid var(--vis-border-color);">
+                <textarea id="acu-vis-assistant-input" class="acu-form-textarea" style="min-height:80px;" placeholder="例如：新增一张战利品表，并关闭旧表独立导出。">${escapeHtml_ACU(assistantUiState_ACU.userRequest)}</textarea>
+                <button id="acu-vis-assistant-generate" class="acu-btn-primary" style="margin-top:8px; width:100%;" ${generateDisabled ? 'disabled' : ''}>${assistantUiState_ACU.isGenerating ? '生成中...' : '发送'}</button>
             </div>
         </div>
     `);
