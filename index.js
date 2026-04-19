@@ -26997,6 +26997,12 @@ function populateTemplatePresetSelectOptions_ACU($select, { extraPresetName = ''
         $select.append(jQuery_API_ACU('<option/>').val(value).text(label));
     });
 }
+function hasOptionValue_ACU($select, value) {
+    if (!$select || !$select.length)
+        return false;
+    const normalizedValue = String(value ?? '');
+    return $select.find('option').toArray().some((option) => String(jQuery_API_ACU(option).val() ?? '') === normalizedValue);
+}
 function loadTemplatePresetSelect_ACU({ globalSelectName = null, keepGlobalValue = false } = {}) {
     if (!$popupInstance_ACU || !$popupInstance_ACU.length)
         return;
@@ -27058,9 +27064,9 @@ function loadTemplatePresetSelect_ACU({ globalSelectName = null, keepGlobalValue
         else if (keepGlobalValue) {
             resolvedGlobalValue = normalizeTemplatePresetSelectionValue_ACU($globalSelect.val());
         }
-        const finalGlobalValue = resolvedGlobalValue && $globalSelect.find(`option[value="${resolvedGlobalValue.replace(/"/g, '\\"')}"]`).length > 0
+        const finalGlobalValue = resolvedGlobalValue && hasOptionValue_ACU($globalSelect, resolvedGlobalValue)
             ? resolvedGlobalValue
-            : (hasGlobalPreset || (!!globalPresetName && $globalSelect.find(`option[value="${globalPresetName.replace(/"/g, '\\"')}"]`).length > 0)
+            : (hasGlobalPreset || (!!globalPresetName && hasOptionValue_ACU($globalSelect, globalPresetName))
                 ? globalPresetName
                 : DEFAULT_TEMPLATE_PRESET_OPTION_VALUE_ACU);
         $globalSelect.val(finalGlobalValue || DEFAULT_TEMPLATE_PRESET_OPTION_VALUE_ACU);
@@ -27069,7 +27075,7 @@ function loadTemplatePresetSelect_ACU({ globalSelectName = null, keepGlobalValue
         $globalDeleteBtn.toggle(!!globalPresetName && presetNames.includes(globalPresetName));
     }
     if ($chatSelect && $chatSelect.length) {
-        const finalChatValue = chatSelectedPresetName && $chatSelect.find(`option[value="${chatSelectedPresetName.replace(/"/g, '\\"')}"]`).length > 0
+        const finalChatValue = chatSelectedPresetName && hasOptionValue_ACU($chatSelect, chatSelectedPresetName)
             ? chatSelectedPresetName
             : DEFAULT_TEMPLATE_PRESET_OPTION_VALUE_ACU;
         $chatSelect.val(finalChatValue || DEFAULT_TEMPLATE_PRESET_OPTION_VALUE_ACU);
@@ -31779,6 +31785,25 @@ async function bindDataEvents_ACU() {
     const $importCombinedSettingsButton = $popupInstance_ACU.find(`#${SCRIPT_ID_PREFIX_ACU}-import-combined-settings`);
     const $exportCombinedSettingsButton = $popupInstance_ACU.find(`#${SCRIPT_ID_PREFIX_ACU}-export-combined-settings`);
     const $openNewVisualizerButton_ACU = $popupInstance_ACU.find(`#${SCRIPT_ID_PREFIX_ACU}-open-new-visualizer`);
+    const handleOpenVisualizerClick_ACU = async () => {
+        try {
+            const topLevelApi = topLevelWindow_ACU?.AutoCardUpdaterAPI;
+            if (topLevelApi?.openVisualizer) {
+                await topLevelApi.openVisualizer();
+                return;
+            }
+            await openNewVisualizer_ACU();
+        }
+        catch (e) {
+            logError_ACU('打开可视化表格编辑器失败:', e);
+            showToastr_ACU('error', `打开可视化表格编辑器失败: ${e?.message || '未知错误'}`);
+        }
+    };
+    if ($openNewVisualizerButton_ACU.length) {
+        $openNewVisualizerButton_ACU
+            .off('click.acu_visualizer')
+            .on('click.acu_visualizer', handleOpenVisualizerClick_ACU);
+    }
     const closeDataIsolationHistoryDropdown_ACU = () => {
         if ($dataIsolationCombo.length && $dataIsolationHistoryList.length) {
             $dataIsolationCombo.removeClass('open');
@@ -32511,16 +32536,6 @@ async function bindDataEvents_ACU() {
         $importCombinedSettingsButton.on('click', importCombinedSettings_ACU$1);
     if ($exportCombinedSettingsButton.length)
         $exportCombinedSettingsButton.on('click', exportCombinedSettings_ACU);
-    if ($openNewVisualizerButton_ACU.length) {
-        $openNewVisualizerButton_ACU.on('click', function () {
-            if (topLevelWindow_ACU.AutoCardUpdaterAPI && topLevelWindow_ACU.AutoCardUpdaterAPI.openVisualizer) {
-                topLevelWindow_ACU.AutoCardUpdaterAPI.openVisualizer();
-            }
-            else {
-                openNewVisualizer_ACU(); // Fallback direct call
-            }
-        });
-    }
     // [新增] 绑定合并总结按钮事件
     const $startMergeSummaryButton = $popupInstance_ACU.find(`#${SCRIPT_ID_PREFIX_ACU}-start-merge-summary`);
     if ($startMergeSummaryButton.length) {
@@ -39714,6 +39729,13 @@ function createDataAdminApi(_ctx) {
         }
         catch (e) {
             logError_ACU('overrideWithTemplate failed:', e);
+            return false;
+        } },
+        openVisualizer: async function () { try {
+            return await openNewVisualizer_ACU();
+        }
+        catch (e) {
+            logError_ACU('openVisualizer failed:', e);
             return false;
         } },
         // 导入TXT链路
