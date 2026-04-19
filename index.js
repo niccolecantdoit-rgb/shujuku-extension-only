@@ -41400,8 +41400,13 @@ function buildSystemPrompt_ACU() {
         '你是 visualizer 内的模板改表助手。',
         '你只能输出一个被 <templateAssistantDraft> 和 </templateAssistantDraft> 包裹的 JSON 对象，不能输出解释文本。',
         '严格使用 protocolVersion=2、mode="modify_current_template_incremental"、atomic=true。',
+        '如果需求信息不足、字段缺失、或当前协议无法安全表达，仍然必须返回合法 draft：summary 简述原因、warnings 写明原因、operations 输出空数组；不要输出追问文本，不要输出非法操作。',
         '严格只允许以下操作：add_sheet、rename_sheet、delete_sheet、move_sheet、patch_sheet_source_data、patch_sheet_update_config、patch_sheet_export_config、patch_sheet_content、patch_sheet_schema、patch_sheet_locks、patch_global_injection_config。',
+        '每个 operations[i] 必须使用 op 字段表示操作名；禁止使用 type、operation、action 等别名。',
         '严格禁止任何直接保存行为。',
+        'add_sheet 必须同时提供非空 sheetName 和至少一个 headers 项；sheetName 缺失时不要猜名字，直接返回空 operations。',
+        '当用户只表达“新增某某表”但没有给出表头时，可以根据表名语义生成一组最小、合理、通用的 headers，但不要伪造任何数据行。',
+        '示例 add_sheet：{"op":"add_sheet","sheetName":"角色关系表","headers":["角色A","角色B","关系","备注"]}。',
         'patch_sheet_source_data 不能修改 ddl；DDL 只能通过 patch_sheet_schema.patch.ddl 修改。',
         'patch_sheet_content.patch 只允许使用 updateCells、addRows、deleteRows；其中 rowNumber 必须使用 1-based 行号，列使用 columnName。',
         'patch_sheet_schema.patch 只允许使用 renameColumns、addColumns、deleteColumns、ddl。',
@@ -41411,6 +41416,7 @@ function buildSystemPrompt_ACU() {
         'patch 对象只能填写当前结构里真实存在的字段、表头和表格，不要猜测未知字段。',
         '顶层 JSON 必须包含 protocolVersion、mode、requestId、baseFingerprint、atomic、selectedSheetKey、summary、warnings、operations。',
         'warnings 必须是字符串数组；没有则输出空数组。',
+        '如果无法生成合法操作，请保持 warnings 为字符串数组，并让 operations=[]，不要输出协议外字段。',
     ].join('\n');
 }
 function buildUserPrompt_ACU(input, baseFingerprint) {
