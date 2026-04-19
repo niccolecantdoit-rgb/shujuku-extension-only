@@ -41861,7 +41861,7 @@ function renderVisualizerTemplateAssistantPanel_ACU() {
     const display = assistantUiState_ACU.isOpen ? 'flex' : 'none';
     const generateDisabled = assistantUiState_ACU.isGenerating || !String(assistantUiState_ACU.userRequest || '').trim();
     $host.html(`
-        <div class="acu-vis-assistant-panel" style="display:${display}; flex-direction:column; width:420px; border-left:1px solid var(--vis-border-color); background:var(--vis-bg-secondary, rgba(0,0,0,0.02)); overflow:auto;">
+        <div class="acu-vis-assistant-panel" style="display:${display}; flex-direction:column; width:420px; height:100%; min-height:0; border-left:1px solid var(--vis-border-color); background:var(--vis-bg-secondary, rgba(0,0,0,0.02)); overflow:hidden;">
             <div style="padding:14px 16px; border-bottom:1px solid var(--vis-border-color); display:flex; justify-content:space-between; align-items:center; gap:12px;">
                 <div>
                     <div style="font-weight:600;">AI 改表助手</div>
@@ -41869,8 +41869,10 @@ function renderVisualizerTemplateAssistantPanel_ACU() {
                 </div>
                 <button id="acu-vis-assistant-close" class="acu-btn-secondary">关闭</button>
             </div>
-            <div class="acu-chat-container" style="flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:12px;">
-                ${renderTranscript_ACU()}
+            <div class="acu-chat-scroll-frame" style="flex:1; min-height:0; margin:16px 16px 12px; border:1px solid rgba(255,255,255,0.16); border-radius:12px; background:rgba(0,0,0,0.14); box-shadow:inset 0 1px 0 rgba(255,255,255,0.04); overflow:hidden; display:flex; flex-direction:column;">
+                <div class="acu-chat-container" style="flex:1; min-height:0; overflow-y:auto; padding:14px; display:flex; flex-direction:column; gap:12px;">
+                    ${renderTranscript_ACU()}
+                </div>
             </div>
             <div style="padding:16px; border-top:1px solid var(--vis-border-color);">
                 <textarea id="acu-vis-assistant-input" class="acu-form-textarea" style="min-height:80px;" placeholder="例如：新增一张战利品表，并关闭旧表独立导出。">${escapeHtml_ACU(assistantUiState_ACU.userRequest)}</textarea>
