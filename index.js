@@ -41462,7 +41462,20 @@ async function generateTemplateAssistantDraft_ACU(input) {
     if (!aiRawText) {
         throw new Error('AI 未返回有效内容');
     }
-    const draft = parseTemplateAssistantDraft_ACU(aiRawText);
+    let draft;
+    try {
+        draft = parseTemplateAssistantDraft_ACU(aiRawText);
+    }
+    catch (error) {
+        logError_ACU('[TemplateAssistant] draft 解析失败', {
+            currentSheetKey: input.currentSheetKey,
+            baseFingerprint,
+            userRequest,
+            errorMessage: error?.message || '未知错误',
+            aiRawText,
+        });
+        throw error;
+    }
     if (draft.baseFingerprint !== baseFingerprint) {
         throw new Error('AI 返回的 baseFingerprint 与当前结构不一致');
     }
