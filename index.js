@@ -41657,6 +41657,19 @@ function buildSessionRoundUserRequest_ACU(options) {
     }
     return chunks.filter(Boolean).join('\n\n');
 }
+function logTemplateAssistantDebug_ACU(label, payload) {
+    if (typeof console === 'undefined' || typeof console.log !== 'function') {
+        return;
+    }
+    const prefix = `[ACU][TemplateAssistant] ${label}`;
+    if (typeof console.groupCollapsed === 'function' && typeof console.groupEnd === 'function') {
+        console.groupCollapsed(prefix);
+        console.log(payload);
+        console.groupEnd();
+        return;
+    }
+    console.log(prefix, payload);
+}
 function getTemplateAssistantSessionAbortReason_ACU(guard) {
     if (guard?.isCancelled?.())
         return 'cancelled';
@@ -41712,7 +41725,35 @@ async function generateTemplateAssistantDraft_ACU(input) {
     if (!aiRawText) {
         throw new Error('AI 未返回有效内容');
     }
-    const draft = parseTemplateAssistantDraft_ACU(aiRawText);
+    logTemplateAssistantDebug_ACU('AI 原始输出', {
+        currentSheetKey: input.currentSheetKey,
+        baseFingerprint,
+        userRequest,
+        aiRawText,
+    });
+    let draft;
+    try {
+        draft = parseTemplateAssistantDraft_ACU(aiRawText);
+    }
+    catch (error) {
+        logTemplateAssistantDebug_ACU('draft 解析失败', {
+            currentSheetKey: input.currentSheetKey,
+            baseFingerprint,
+            userRequest,
+            errorMessage: error?.message || '未知错误',
+        });
+        throw error;
+    }
+    logTemplateAssistantDebug_ACU('解析后的 op 结果', {
+        currentSheetKey: input.currentSheetKey,
+        baseFingerprint,
+        userRequest,
+        selectedSheetKey: draft.selectedSheetKey,
+        summary: draft.summary,
+        warnings: clone_ACU$1(draft.warnings),
+        operationCount: draft.operations.length,
+        operations: clone_ACU$1(draft.operations),
+    });
     if (draft.baseFingerprint !== baseFingerprint) {
         throw new Error('AI 返回的 baseFingerprint 与当前结构不一致');
     }
