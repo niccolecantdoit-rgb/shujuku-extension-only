@@ -41073,11 +41073,38 @@ function buildTemplateAssistantEmbeddedReferenceText_ACU() {
         .join('\n\n----------------------------------------\n\n');
 }
 
+const TEMPLATE_ASSISTANT_SOURCE_DATA_ALLOWED_KEYS_ACU = ['note', 'initNode', 'insertNode', 'updateNode', 'deleteNode'];
+const TEMPLATE_ASSISTANT_SOURCE_DATA_ALLOWED_KEY_SET_ACU = new Set(TEMPLATE_ASSISTANT_SOURCE_DATA_ALLOWED_KEYS_ACU);
 function clone_ACU$1(value) {
     return JSON.parse(JSON.stringify(value));
 }
 function asObject_ACU(value, fallback = {}) {
     return value && typeof value === 'object' && !Array.isArray(value) ? value : fallback;
+}
+function sanitizeSourceDataSnapshotForAssistant_ACU(value) {
+    const sourceData = asObject_ACU(value);
+    const sanitized = {};
+    TEMPLATE_ASSISTANT_SOURCE_DATA_ALLOWED_KEYS_ACU.forEach((key) => {
+        if (Object.prototype.hasOwnProperty.call(sourceData, key)) {
+            sanitized[key] = clone_ACU$1(sourceData[key]);
+        }
+    });
+    return sanitized;
+}
+function validateSourceDataPayload_ACU(value, label) {
+    if (value == null)
+        return;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        throw new Error(`${label} 必须是对象`);
+    }
+    Object.keys(value).forEach((key) => {
+        if (TEMPLATE_ASSISTANT_SOURCE_DATA_ALLOWED_KEY_SET_ACU.has(key))
+            return;
+        if (key === 'ddl') {
+            throw new Error(`${label} 不能直接修改 ddl，请改用 patch_sheet_schema.ddl`);
+        }
+        throw new Error(`${label} 包含未知字段: ${key}`);
+    });
 }
 function extractHeaders_ACU(sheet) {
     return Array.isArray(sheet?.content?.[0]) ? sheet.content[0].slice(1).map((item) => String(item ?? '')) : [];
@@ -41090,7 +41117,7 @@ function getSheetSnapshot_ACU(tempData, sheetKey) {
         orderNo: Number.isFinite(sheet?.orderNo) ? sheet.orderNo : null,
         headers: extractHeaders_ACU(sheet),
         content: clone_ACU$1(Array.isArray(sheet?.content) ? sheet.content : []),
-        sourceData: clone_ACU$1(asObject_ACU(sheet?.sourceData)),
+        sourceData: sanitizeSourceDataSnapshotForAssistant_ACU(sheet?.sourceData),
         updateConfig: clone_ACU$1(asObject_ACU(sheet?.updateConfig)),
         exportConfig: clone_ACU$1(asObject_ACU(sheet?.exportConfig)),
     };
@@ -41422,8 +41449,11 @@ function validateTemplateAssistantDraft_ACU(draft) {
                 throw new Error(`${opName} 缺少合法 patch 对象`);
             }
         }
-        if (opName === 'patch_sheet_source_data' && Object.prototype.hasOwnProperty.call(op.patch || {}, 'ddl')) {
-            throw new Error('patch_sheet_source_data 不能直接修改 ddl，请改用 patch_sheet_schema.ddl');
+        if (opName === 'add_sheet') {
+            validateSourceDataPayload_ACU(op.sourceData, 'add_sheet.sourceData');
+        }
+        if (opName === 'patch_sheet_source_data') {
+            validateSourceDataPayload_ACU(op.patch, 'patch_sheet_source_data.patch');
         }
         if (opName === 'patch_sheet_content') {
             validateTemplateAssistantContentPatch_ACU(op);
@@ -41469,10 +41499,12 @@ function buildSystemPrompt_ACU() {
         '每个 operations[i] 必须使用 op 字段表示操作名；禁止使用 type、operation、action 等别名。',
         '严格禁止任何直接保存行为。',
         'add_sheet 必须同时提供非空 sheetName 和至少一个 headers 项；并且应尽量同时提供 sourceData.note、sourceData.initNode、sourceData.insertNode、sourceData.updateNode、sourceData.deleteNode；sheetName 缺失时不要猜名字，直接返回空 operations。',
+        'add_sheet.sourceData 与 patch_sheet_source_data.patch 只允许 note、initNode、insertNode、updateNode、deleteNode 五个字段；禁止出现 ddl、sql、schema、createTable 等字段。',
         '新建表时，不要只给空壳。sourceData.note 要写清这张表记录什么、一行代表什么、是单行表还是多行表、各列含义、哪列可以作为稳定标识。sourceData.initNode/insertNode/updateNode/deleteNode 要写清何时初始化、何时新增、何时更新、何时删除。',
         '当用户只表达“新增某某表”但没有给出表头时，可以根据表名语义生成一组最小、合理、通用、可直接用于后续剧情更新的 headers；自定义表头尽量避免使用带 / 的列名；不要伪造数据行。',
         '物品/战利品/库存类表，优先考虑“物品名称、数量、描述/效果、类别、备注、来源/掉落来源”等能直接支撑后续更新的列；其中应至少包含一个稳定标识列。',
         '默认优先 add_sheet + 完整 sourceData，让新表立刻具备初始化/新增/更新/删除指引；除非用户明确要求 DDL、字段类型、约束或 SQLite 建表语句，否则不要主动输出 patch_sheet_schema.ddl。',
+        '即使用户要求“顺便写 SQL/DDL”，也不要把 ddl 或 sql 塞进 add_sheet.sourceData；新建表时优先输出 headers + 合法的五段 sourceData。',
         '如果当前 headers 主要是中文，自定义 ddl 很容易触发校验失败；除非用户明确要求并且已经给出可直接落地的列名方案，否则不要生成 ddl。',
         '示例 add_sheet：{"op":"add_sheet","sheetName":"角色关系表","headers":["角色A","角色B","关系","备注"]}。',
         '示例（库存/战利品类）add_sheet：{"op":"add_sheet","sheetName":"战利品表","headers":["物品名称","数量","描述/效果","类别"],"sourceData":{"note":"记录战利品条目，一行代表一种物品。","initNode":"当剧情或设定已经明确存在初始战利品时初始化。","insertNode":"出现新的战利品时新增。","updateNode":"已有战利品数量或状态变化时更新。","deleteNode":"战利品被清空、移除或失效时删除。"}}。',
@@ -41507,6 +41539,8 @@ function buildUserPrompt_ACU(input, baseFingerprint) {
             atomicOnly: true,
             allowCrossSheetPatch: true,
             patchSourceDataForbidDdl: true,
+            sourceDataAllowedKeys: [...TEMPLATE_ASSISTANT_SOURCE_DATA_ALLOWED_KEYS_ACU],
+            addSheetSourceDataForbidDdl: true,
             allowStructuredContentPatch: true,
             allowStructuredSchemaPatch: true,
             allowStructuredLockPatch: true,
@@ -41518,6 +41552,7 @@ function buildUserPrompt_ACU(input, baseFingerprint) {
             avoidDdlWhenHeadersAreMostlyChinese: true,
             avoidSlashInNewCustomHeaders: true,
             cannotPatchNewSheetAfterAddInSameDraft: true,
+            redactExistingSourceDataDdlFromSnapshots: true,
         },
     };
     return safeJsonStringify_ACU(payload, '{}');
