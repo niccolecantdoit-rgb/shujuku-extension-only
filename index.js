@@ -40417,13 +40417,36 @@ function buildDefaultUpdateConfig_ACU() {
         groupId: -1,
     };
 }
-function buildDefaultSourceData_ACU() {
+function buildDefaultSourceData_ACU(sheetName, headers) {
+    const normalizedHeaders = Array.isArray(headers)
+        ? headers.map((item) => String(item ?? '').trim()).filter(Boolean)
+        : [];
+    const combinedText = [sheetName, ...normalizedHeaders].join('|');
+    const primaryHeader = normalizedHeaders.find((item) => /名称|姓名|标题|编号|代号|ID|id/.test(item)) || normalizedHeaders[0] || '首列';
+    const isInventoryLike = /战利品|背包|物品|掉落|素材|装备|loot|inventory/i.test(combinedText);
+    if (isInventoryLike) {
+        const noteLines = [
+            `记录${sheetName || '该表'}中的物品或战利品条目，一行代表一种可被持续追踪的物品。优先使用「${primaryHeader}」定位同一条目，避免把同名物品重复新增成多行。`,
+            ...normalizedHeaders.map((header, index) => `- 列${index + 1}: ${header} - 请记录该物品的对应信息，并保持同一物品长期使用同一行更新。`),
+        ];
+        return {
+            note: noteLines.join('\n'),
+            initNode: '当剧情、设定或当前场景已经明确存在初始物品、掉落物或库存时，先初始化最基础的真实条目；如果没有明确信息，不要编造。',
+            insertNode: '当出现当前表中还没有记录的新物品、新战利品或新掉落来源时新增一行。',
+            updateNode: '当已有物品的数量、状态、类别、描述或来源发生变化时更新原有行；如果只是数量变化，优先更新数量，不要重复新增同名物品。',
+            deleteNode: '当物品被完全移除、耗尽、拾取后不再追踪或明确失效时删除；如果只是数量减少，优先更新而不是删后重建。',
+        };
+    }
+    const noteLines = [
+        `记录${sheetName || '该表'}中的条目。默认按一行一个条目理解；优先使用「${primaryHeader}」作为稳定标识。如果这是单行配置表，请在说明中明确“此表有且仅有一行”。`,
+        ...normalizedHeaders.map((header, index) => `- 列${index + 1}: ${header} - 请补充这一列记录的具体含义与约束。`),
+    ];
     return {
-        note: '新表格说明',
-        initNode: '',
-        insertNode: '',
-        updateNode: '',
-        deleteNode: '',
+        note: noteLines.join('\n'),
+        initNode: '当该表为空且剧情、设定或现有资料已经明确存在应记录的内容时，先初始化最基础的真实条目；如果没有明确信息，不要编造。',
+        insertNode: '当出现当前表中不存在、且应被记录的新条目时新增一行；如果这是单行表，不要新增，改为更新现有行。',
+        updateNode: '当已记录条目的状态、数量、描述或其他字段发生变化时更新对应行；如果这是单行表，始终更新现有行。',
+        deleteNode: '当条目已明确失效、移除、耗尽或不应继续保留时删除；如果这是单行表，通常不要删除。',
     };
 }
 function sanitizeAddSheetConfig_ACU(rawValue, baseValue, label) {
@@ -40447,7 +40470,8 @@ function buildNewSheet_ACU(op, newKey, orderNo) {
     if (headers.length === 0) {
         throw new Error('add_sheet 至少需要一个表头');
     }
-    const sourceData = sanitizeAddSheetConfig_ACU(op?.sourceData, buildDefaultSourceData_ACU(), 'sourceData');
+    assertHeadersUnique_ACU(headers);
+    const sourceData = sanitizeAddSheetConfig_ACU(op?.sourceData, buildDefaultSourceData_ACU(sheetName, headers), 'sourceData');
     const updateConfigRaw = sanitizeAddSheetConfig_ACU(op?.updateConfig, buildDefaultUpdateConfig_ACU(), 'updateConfig');
     const updateConfig = { ...updateConfigRaw, uiSentinel: -1 };
     const exportConfig = sanitizeAddSheetConfig_ACU(op?.exportConfig, buildDefaultExportConfig_ACU(sheetName), 'exportConfig');
@@ -41011,6 +41035,58 @@ function compileTemplateAssistantDraft_ACU(input) {
     };
 }
 
+const joinLines_ACU = (...lines) => lines.join('\n');
+const TEMPLATE_ASSISTANT_EMBEDDED_REFERENCE_CHUNKS_ACU = [
+    {
+        sourceFile: 'syntax-reference (1).md',
+        section: '导读：两种运行模式的能力差异',
+        content: joinLines_ACU('## 导读：两种运行模式的能力差异', '', '语法能否生效取决于当前运行模式。**在看每一节前先对照这张表**：', '', '| 语法 | 原生（DSL）模式 | SQLite 模式 |', '|------|:---------------:|:-----------:|', '| `<random>` / `$random:` | ✅ | ✅ |', '| `<calc>` / `$calc:` | ✅ | ✅ |', '| `<max>` / `$max:` / `<min>` / `$min:` | ✅ | ✅ |', '| `<if seed="...">` | ✅ | ✅ |', '| `<if cell="...">` | ✅ | ✅ |', '| `<if cond="...">`（非 db:/sql:/v: 前缀部分） | ✅ | ✅ |', '| `{[db.表名.方法链]}` | ❌ | ✅ |', '| `{[db.expr/rand/calc/max/min(...)]}` | ❌ | ✅ |', '| `{[sql "SELECT..."]}` | ❌ | ✅ |', '| `{[... as 变量名]}` / `$v:变量名` | ❌ | ✅ |', '| `<if db="...">` / `<if sql="...">` | ❌ | ✅ |', '| `<if cond="db:... | sql:... | v:...">` 中的对应前缀 | ❌ | ✅ |', '', '> ⚠️ 在原生模式下书写仅 SQLite 支持的语法，标签会**原样保留**在文本中发给 AI，不会报错也不会替换。'),
+    },
+    {
+        sourceFile: 'syntax-reference (1).md',
+        section: '二、值替换变量（仅 SQLite 模式）/ 2.1 ORM 查询',
+        content: joinLines_ACU('## 二、值替换变量（仅 SQLite 模式）', '', '> 以下全部语法**只在 SQLite 模式生效**，原生模式下标签会原样保留。原因：它们都走 SQLite 引擎的 `executeQuery()`，原生模式下没有这个引擎。', '', '### 2.1 ORM 查询：`{[db.表名.方法链]}`', '', '```', '你身上有 {[db.背包物品表.where(\'物品名称\', \'铁剑\').get(\'数量\')]} 把铁剑。', '```', '', '→ **执行结果**：', '```', '你身上有 3 把铁剑。', '```', '', '底层实现是一个 `Proxy`：`db.背包物品表` 返回一个 `TableQueryBuilder`，后续所有方法是链式调用，最后由**终结方法**决定输出形式。', '', '#### 2.1.1 查询构建方法（返回 `TableQueryBuilder`，可继续链式）', '', '| 方法 | SQL 等价 | 示例 |', '|------|---------|------|', '| `.where(\'列\', \'值\')` | `列 = \'值\'` | `.where(\'姓名\', \'艾莉\')` |', '| `.where(\'列\', \'>\', 数值)` | `列 > 数值`（`>` `>=` `<` `<=` `!=` `=`） | `.where(\'数量\', \'>\', 2)` |', '| `.orWhere(\'列\', \'值\')` | 把当前 AND 组封存为一个 OR 分支，开新的 AND 组 | 见下方 OR 示例 |', '| `.whereIn(\'列\', [值...])` | `列 IN (...)`（空数组 → 永假） | `.whereIn(\'类别\', [\'武器\',\'消耗品\'])` |', '| `.whereLike(\'列\', \'模式\')` | `列 LIKE \'模式\'`（`%` 任意字符，`_` 单字符） | `.whereLike(\'物品名称\', \'%药水%\')` |', '| `.orderBy(\'列\', \'ASC\')` | `ORDER BY 列 ASC`（或 `\'DESC\'`） | `.orderBy(\'数量\', \'DESC\')` |', '| `.limit(数量)` | `LIMIT n` | `.limit(5)` |', '| `.offset(数量)` | `OFFSET n`（需配合 `limit`，内部若无 `limit` 会补 `LIMIT -1`） | `.limit(10).offset(20)` |', '', '#### 2.1.2 终结方法（返回具体值，结束链式）', '', '| 方法 | 返回类型 | 说明 |', '|------|---------|------|', '| `.get(\'列\')` | `string | number | null` | 第一行指定列的值 |', '| `.first()` | `Record<string,any> | null` | 第一行所有列组成的对象 |', '| `.list(\'列\')` | `Array<string|number>` | 某列所有行的值 |', '| `.all()` | `Array<Record<string,any>>` | 所有行所有列 |', '| `.count()` | `number` | `COUNT(*)` |', '| `.sum(\'列\')` / `.avg(\'列\')` / `.max(\'列\')` / `.min(\'列\')` | `number` | 聚合函数 |', '| `.exists()` | `boolean` | 是否存在至少一行 |', '| `.value(\'SQL表达式\')` | `string | number | null` | 在当前 WHERE 上下文里跑自定义 `SELECT <表达式>`，见下方示例 |', '| `.toSQL()` | `string` | 生成的 SQL（调试用） |'),
+    },
+    {
+        sourceFile: 'syntax-reference (1).md',
+        section: '三、<if> 条件标签 / 3.2 <if cell="表达式">',
+        content: joinLines_ACU('### 3.2 `<if cell="表达式">`', '', '比较表格单元格的值。', '', '**表达式格式**：`<单元格引用> <运算符> <比较值>`', '', '**运算符**：`>` `<` `>=` `<=` `==` `!=`。**全角运算符自动转半角**：`＞→>`、`＜→<`、`＝→==`、`≥→>=`、`≤/≦→<=`、`≠→!=`。', '', '**单元格引用的真实匹配规则**（旧文档写错过，以这里为准）：', '', '#### 三段式 `表名/行标识/列名`', '', '优先走 `getCellValue_ACU(tableName, rowName, colName)`：', '1. 按 `tableName` 精确匹配表', '2. 按 `colName` 在**表头**里精确匹配列', '3. 按 `rowName` 在**每一行的任意单元格**里精确匹配（**不是**只匹配首列）', '4. 若失败，再尝试把 `rowName` 和 `colName` 互换（兼容用户写反顺序）', '', '**示例**：', '```html', '<if cell="背包物品表/铁剑/数量 >= 3">铁剑库存充足。<else>铁剑库存不足。</if>', '<if cell="重要角色表/艾莉/是否离场 == 否">艾莉在场。</if>', '```', '→ **执行结果**（铁剑数量=3、艾莉是否离场=否）：', '```', '铁剑库存充足。', '艾莉在场。', '```'),
+    },
+    {
+        sourceFile: 'syntax-reference (1).md',
+        section: '三、<if> 条件标签 / 3.5 <if cond="...">',
+        content: joinLines_ACU('### 3.5 `<if cond="...">` — 统一条件表达式（最强）', '', '支持**所有前缀**和**完整的逻辑组合**。', '', '#### 可用前缀', '', '| 前缀 | 等价于 | 仅 SQLite 模式 |', '|------|-------|:-------------:|', '| `seed:<关键词表达式>` | `<if seed="...">`（但**被嵌入到 cond 里后 `&`/`,` 会冲突**，所以建议子表达式里不要再用 `,`/`&`，改用括号或拆分） | - |', '| `cell:<单元格表达式>` | `<if cell="...">` | - |', '| `random:<变量名> 运算 值` | 和 `$random:` 做数值比较 | - |', '| `random:min-max 运算 值` | **内联随机数**：即用即生，用完就丢 | - |', '| `calc:<变量名> 运算 值` | 数值比较 | - |', '| `max:<变量名> 运算 值` | 数值比较 | - |', '| `min:<变量名> 运算 值` | 数值比较 | - |', '| `db:<ORM 表达式>` | `<if db="...">` | ✅ |', '| `sql:<SQL 语句>` | `<if sql="...">` | ✅ |', '| `v:<变量名>` | `$v:变量名` 的比较 / truthy | ✅ |', '| *（无前缀）* | 当关键词处理，等价于 `seed:` | - |', '', '#### 逻辑运算符和优先级', '', '| 运算符 | 含义 | 优先级 |', '|--------|------|:------:|', '| `()` | 括号分组 | 最高 |', '| `!` | 取反（一元前缀） | 高 |', '| `&` | AND | 中 |', '| `,` | OR | 最低 |', '', '> **实现细节**：是手写的**递归下降解析器**，`parseOrExpr → parseAndExpr → parsePrimary`。括号会正确改变优先级。', '', '> ⚠️ `cond` 中的子表达式**不要在自身内部再带** `,` 或 `&`（那些会被当成外层逻辑运算符切割）。如果 seed 的关键词本身就要用 `,`/`&`，请拆到独立 `<if seed>` 里。'),
+    },
+    {
+        sourceFile: 'syntax-reference (1).md',
+        section: '五、完整处理顺序（Pipeline） 与 六、真实内置表速查',
+        content: joinLines_ACU('## 五、完整处理顺序（Pipeline）', '', '**这是理解所有语法的关键**。每条提示词消息按下面顺序跑一遍：', '', '```', '1.  parseRandomTags_ACU         解析 <random>，无 id 的替换成数字，有 id 的存变量并抹掉标签', '2.  replaceRandomVariables_ACU  替换文本中的 $random:xxx', '3.  parseCalcTags_ACU           解析 <calc>，求值并存变量', '4.  parseMaxTags_ACU            解析 <max>', '5.  parseMinTags_ACU            解析 <min>', '6.  replaceCalcVariables_ACU    替换 $calc:xxx', '7.  replaceMaxVariables_ACU     替换 $max:xxx', '8.  replaceMinVariables_ACU     替换 $min:xxx', '9.  replaceDbSqlVariables       ──（仅 SQLite 模式，否则跳过）──', '       9a. replaceDbExpressions    替换 {[db...]} 和 {[db... as X]}', '       9b. replaceSqlExpressions   替换 {[sql "..."]} 和 {[sql "..." as X]}', '       9c. replaceVarReferences    替换剩余的 $v:xxx', '10. parseIfBlockRecursive_ACU   解析 <if>，选中分支后对分支内容先替换 $v:，再递归解析嵌套 <if>', '```', '', '**重要推论**：', '', '- **`<calc expr="$v:xxx + 1" />` 不生效**：因为第 3 步 `parseCalcTags` 在第 9 步 `$v:` 替换**之前**就跑了，此时 `$v:` 还没替换成值，进 `evaluateCalcExpression` 会被当成非法字符拒绝。想用 `$v:` 做算术，请改用 `{[db.calc("$v:... + 1") as y]}`。', '- **`<if cond="calc:dice > 3">` 要求 `<calc id="dice">` 写在 `<if>` 之前**（否则 calcVariables 里还没这个 id）。', '- **每条消息变量都是独立的**：`_dbSqlVars` 在 `replaceDbSqlVariables` 入口处 `clearDbSqlVariables()` 清空；`randomVariables/calcVariables/maxVariables/minVariables` 在各自 `parseXxxTags` 入口处清空。消息与消息之间**不共享**变量。', '', '## 六、真实内置表速查（写示例时直接套用）', '', '> ⚠️ 示例里不要用 "角色属性表"、"事件表"、"地点表"、"装备表" 这种**不存在的表名**。也不要用 "主角信息表/主角/生命值" 这种**不存在的列**。下面是 8 张真实内置表的**完整列清单**：', '', '| 中文表名 | 英文表名 | 全部列（中文） | 业务主键 |', '|---------|---------|--------------|---------|', '| 全局数据表 | `global_state` | 主角当前所在地点、当前时间、上轮场景时间、经过的时间 | `row_id = 1`（单行） |', '| 主角信息表 | `protagonist_info` | 人物名称、性别/年龄、外貌特征、职业/身份、过往经历、性格特点 | `row_id = 1`（单行） |', '| 主角技能表 | `protagonist_skills` | 技能名称、技能类型、等级/阶段、效果描述 | 技能名称 UNIQUE |', '| 重要角色表 | `important_characters` | 姓名、性别/年龄、一句话介绍、外貌特征、持有的重要物品、是否离场、过往经历 | 姓名 UNIQUE |', '| 背包物品表 | `inventory` | 物品名称、数量、描述/效果、类别 | 物品名称 UNIQUE |', '| 任务与事件表 | `quests_events` | 任务名称、任务类型、发布者、详细描述、当前进度、任务时限、奖励、惩罚 | 任务名称 UNIQUE |', '| 纪要表 | `chronicle` | 时间跨度、地点、纪要、概览、编码索引 | 编码索引 UNIQUE |', '| 选项表 | `options` | 选项一、选项二、选项三、选项四 | `row_id = 1`（单行） |'),
+    },
+    {
+        sourceFile: 'SQL模板语法从0开始上手教程.txt',
+        section: '第一个能用的例子（先看这个）',
+        content: joinLines_ACU('第一个能用的例子（先看这个）', '════════════════════════════════════════', '', '假设你的背包里有 3 把铁剑，你想在提示词里自动显示这个数字。', '', '    你身上有 {[db.背包物品表.where(\'物品名称\', \'铁剑\').get(\'数量\')]} 把铁剑。', '', '运行后：', '', '    你身上有 3 把铁剑。', '', '这一行代码，每个部分是什么意思：', '', '    {[                   固定开头，照抄', '    db                   代表「数据库」，照抄', '    .背包物品表           表名，换成你自己的表', '    .where               筛选的关键词，照抄', '    (\'物品名称\', \'铁剑\')   「哪一列 等于 哪个值」，引号必须英文单引号', '    .get                 取值的关键词，照抄', '    (\'数量\')             要拿的列名，引号必须英文单引号', '    ]}                   固定结尾，照抄', '', '你能改的只有中文部分（表名、列名、要找的值）。', '英文部分（db、where、get）一个字母都不能改。', '', '这个例子需要在 SQLite 模式下才能用。怎么知道自己开的是什么模式：', '看设置里有没有"启用 SQLite"或者类似选项，开了就是 SQLite 模式，没开就是原生模式。', '如果你写了 {[db...]} 结果屏幕上原样显示没变成数字，就是模式没开。'),
+    },
+    {
+        sourceFile: 'SQL模板语法从0开始上手教程.txt',
+        section: '变量 · 存一个值反复用（as 和 $v:） 与 db 特殊方法',
+        content: joinLines_ACU('变量 · 存一个值反复用（as 和 $v:）', '════════════════════════════════════════', '', '🔵 本章需要 SQLite 模式', '', '📋 模板', '', '    {[db.<表名>.where(...).get(...) as <变量名>]}', '    后面用 $v:<变量名> 取出来', '', '📖 字段讲解', '', '    as             「命名为」的关键词，照抄', '    <变量名>       你给这个值起的名字', '                   · 只能用英文、数字、下划线', '                   · 不能用中文', '                   · 不能以数字开头', '    $v:            固定前缀，冒号不能省', '    $v:<变量名>    代表那个变量的值', '', '    🔴 变量只在当前这一条消息里有效。', '        下一条消息会清空，要继续用就得在新消息里重新查一遍。', '', '    🔴 带 as 的 {[... as x]} 标签本身会消失，值存进 $v:x 里。', '        屏幕上看不到原来的标签是正常的。', '', '💡 实操例子', '', '    {[db.背包物品表.where(\'物品名称\',\'铁剑\').get(\'数量\') as sword_cnt]}', '    {[db.重要角色表.where(\'是否离场\',\'否\').count() as alive_cnt]}', '    ', '    你有 $v:sword_cnt 把铁剑，场上还有 $v:alive_cnt 位同伴。', '', 'db 特殊方法 · db.expr 直接算一段 SQL', '════════════════════════════════════════', '', '📋 模板', '', '    {[db.expr("<SQL表达式>")]}', '    {[db.expr("<SQL表达式>") as <变量名>]}', '', '💡 实操例子', '', '    {[db.expr("3 + 5 * 2")]}', '    铁剑数量 × 2：{[db.expr("(SELECT 数量 FROM 背包物品表 WHERE 物品名称=\'铁剑\') * 2")]}', '', 'db 特殊方法 · db.rand 随机整数', '════════════════════════════════════════', '', '📋 模板', '', '    {[db.rand(<最小>, <最大>)]}', '    {[db.rand(<最小>, <最大>) as <变量名>]}', '', '💡 实操例子', '', '    {[db.rand(1, 100) as luck_roll]}', '    本次幸运值：$v:luck_roll'),
+    },
+    {
+        sourceFile: 'SQL模板语法从0开始上手教程.txt',
+        section: 'if · 按关键词判断 / 按单元格的值判断 / 按 db 与 SQL 查询结果判断 / 万能组合条件',
+        content: joinLines_ACU('if · 按关键词判断（if seed）', '════════════════════════════════════════', '', '🟢 原生模式和 SQLite 模式都能用', '', '📋 模板', '', '    只显示成立内容：', '        <if seed="<关键词>"><内容></if>', '    ', '    带 else（不成立时显示另一段）：', '        <if seed="<关键词>"><成立时内容><else><不成立时内容></if>', '', 'if · 按单元格的值判断（if cell）', '════════════════════════════════════════', '', '📋 模板（永远用这个三段式）', '', '    <if cell="<表名>/<行标识>/<列名> <运算符> <比较值>"><内容></if>', '', '    🔴 一定要用三段式（表名/行标识/列名）。', '        不要写成两段式（表名/列名），那种写法逻辑反直觉，容易错。', '', '💡 实操例子', '', '    <if cell="背包物品表/铁剑/数量 >= 3">铁剑库存充足。<else>铁剑库存不足。</if>', '    <if cell="重要角色表/艾莉/是否离场 == 否">艾莉还在。</if>', '', 'if · 按 db 查询结果判断（if db）', '════════════════════════════════════════', '', '🔵 本章需要 SQLite 模式', '', '📋 模板', '', '    <if db="<db 链式表达式或布尔判断>"><内容></if>', '', '💡 实操例子', '', '    <if db="db.背包物品表.count() > 2">物品超过 2 种。</if>', '    <if db="db.背包物品表.where(\'物品名称\',\'铁剑\').exists()">有铁剑。</if>', '', 'if · 按 SQL 查询结果判断（if sql）', '════════════════════════════════════════', '', '📋 模板', '', '    <if sql="<SELECT 语句>"><内容></if>', '', '💡 实操例子', '', '    <if sql="SELECT 1 FROM 背包物品表 WHERE 物品名称=\'铁剑\'">有铁剑。</if>', '    <if sql="SELECT COUNT(*) FROM 重要角色表 WHERE 是否离场=\'否\'">存在未离场角色。</if>', '', 'if · 万能组合条件（if cond）', '════════════════════════════════════════', '', '这个最强，可以把前面所有 if 类型揉在一起写。', '', '📋 模板', '', '    <if cond="<前缀>:<表达式> <逻辑符> <前缀>:<表达式>"><内容></if>', '', '    🔸 可以用的前缀（就是告诉系统这段是哪种条件）：', '', '        seed:     关键词条件        例：seed:战斗', '        cell:     单元格比较        例：cell:背包物品表/铁剑/数量 > 2', '        random:   内联随机          例：random:1-100 > 80', '        db:       db 条件           例：db:背包物品表.count() > 2', '        sql:      SQL 条件          例：sql:SELECT COUNT(*) FROM 背包物品表', '        v:        变量条件          例：v:sword_cnt > 0', '', '    🔴 seed: 里不要自己塞 , 和 &：', '        错：<if cond="seed:A,B & cell:xxx/yyy > 10">', '        对：<if cond="(seed:A, seed:B) & cell:xxx/yyy > 10">', '', '    🔴 用 v: 之前必须先用 {[... as x]} 存好变量。', '        变量要出现在同一条消息里，而且要写在 <if> 的前面。'),
+    },
+];
+function buildTemplateAssistantEmbeddedReferenceText_ACU() {
+    return TEMPLATE_ASSISTANT_EMBEDDED_REFERENCE_CHUNKS_ACU
+        .map((chunk) => [
+        `【原文嵌入 / ${chunk.sourceFile} / ${chunk.section}】`,
+        chunk.content,
+    ].join('\n'))
+        .join('\n\n----------------------------------------\n\n');
+}
+
 function clone_ACU$1(value) {
     return JSON.parse(JSON.stringify(value));
 }
@@ -41396,18 +41472,27 @@ function validateTemplateAssistantDraft_ACU(draft) {
     };
 }
 function buildSystemPrompt_ACU() {
+    const embeddedReferenceText = buildTemplateAssistantEmbeddedReferenceText_ACU();
     return [
         '你是 visualizer 内的模板改表助手。',
         '你只能输出一个被 <templateAssistantDraft> 和 </templateAssistantDraft> 包裹的 JSON 对象，不能输出解释文本。',
         '严格使用 protocolVersion=2、mode="modify_current_template_incremental"、atomic=true。',
+        '下面会附带两份本地语法文档的原文分块嵌入内容；这些内容不是摘要，而是从 `syntax-reference (1).md` 和 `SQL模板语法从0开始上手教程.txt` 摘取的原文片段。凡是涉及提示词模板、条件表达式、SQLite 查询、变量、内置表、执行顺序、常见踩坑时，优先以这些原文片段为准。',
         '如果需求信息不足、字段缺失、或当前协议无法安全表达，仍然必须返回合法 draft：summary 简述原因、warnings 写明原因、operations 输出空数组；不要输出追问文本，不要输出非法操作。',
         '严格只允许以下操作：add_sheet、rename_sheet、delete_sheet、move_sheet、patch_sheet_source_data、patch_sheet_update_config、patch_sheet_export_config、patch_sheet_content、patch_sheet_schema、patch_sheet_locks、patch_global_injection_config。',
         '每个 operations[i] 必须使用 op 字段表示操作名；禁止使用 type、operation、action 等别名。',
         '严格禁止任何直接保存行为。',
-        'add_sheet 必须同时提供非空 sheetName 和至少一个 headers 项；sheetName 缺失时不要猜名字，直接返回空 operations。',
-        '当用户只表达“新增某某表”但没有给出表头时，可以根据表名语义生成一组最小、合理、通用的 headers，但不要伪造任何数据行。',
+        'add_sheet 必须同时提供非空 sheetName 和至少一个 headers 项；并且应尽量同时提供 sourceData.note、sourceData.initNode、sourceData.insertNode、sourceData.updateNode、sourceData.deleteNode；sheetName 缺失时不要猜名字，直接返回空 operations。',
+        '新建表时，不要只给空壳。sourceData.note 要写清这张表记录什么、一行代表什么、是单行表还是多行表、各列含义、哪列可以作为稳定标识。sourceData.initNode/insertNode/updateNode/deleteNode 要写清何时初始化、何时新增、何时更新、何时删除。',
+        '当用户只表达“新增某某表”但没有给出表头时，可以根据表名语义生成一组最小、合理、通用、可直接用于后续剧情更新的 headers；自定义表头尽量避免使用带 / 的列名；不要伪造数据行。',
+        '物品/战利品/库存类表，优先考虑“物品名称、数量、描述/效果、类别、备注、来源/掉落来源”等能直接支撑后续更新的列；其中应至少包含一个稳定标识列。',
+        '默认优先 add_sheet + 完整 sourceData，让新表立刻具备初始化/新增/更新/删除指引；除非用户明确要求 DDL、字段类型、约束或 SQLite 建表语句，否则不要主动输出 patch_sheet_schema.ddl。',
+        '如果当前 headers 主要是中文，自定义 ddl 很容易触发校验失败；除非用户明确要求并且已经给出可直接落地的列名方案，否则不要生成 ddl。',
         '示例 add_sheet：{"op":"add_sheet","sheetName":"角色关系表","headers":["角色A","角色B","关系","备注"]}。',
+        '示例（库存/战利品类）add_sheet：{"op":"add_sheet","sheetName":"战利品表","headers":["物品名称","数量","描述/效果","类别"],"sourceData":{"note":"记录战利品条目，一行代表一种物品。","initNode":"当剧情或设定已经明确存在初始战利品时初始化。","insertNode":"出现新的战利品时新增。","updateNode":"已有战利品数量或状态变化时更新。","deleteNode":"战利品被清空、移除或失效时删除。"}}。',
         'patch_sheet_source_data 不能修改 ddl；DDL 只能通过 patch_sheet_schema.patch.ddl 修改。',
+        '当前协议校验会直接对比 patch_sheet_schema.patch.ddl 的列名与当前 headers；因此如果生成 ddl，列名必须与当前 headers 完全同名同序，第一列必须是 row_id INTEGER PRIMARY KEY。',
+        '不要为刚 add_sheet 的新表生成依赖真实 sheetKey 的 follow-up patch 来补 DDL 或 starter rows；当前同一份 draft 无法可靠引用尚未落地的新表。',
         'patch_sheet_content.patch 只允许使用 updateCells、addRows、deleteRows；其中 rowNumber 必须使用 1-based 行号，列使用 columnName。',
         'patch_sheet_schema.patch 只允许使用 renameColumns、addColumns、deleteColumns、ddl。',
         'patch_sheet_locks.patch 只允许使用 rows、columns、cells、specialIndexLocked；rows/cells 使用 1-based rowNumber，列使用 columnName，所有锁变更都必须显式给出 locked 布尔值。',
@@ -41417,6 +41502,7 @@ function buildSystemPrompt_ACU() {
         '顶层 JSON 必须包含 protocolVersion、mode、requestId、baseFingerprint、atomic、selectedSheetKey、summary、warnings、operations。',
         'warnings 必须是字符串数组；没有则输出空数组。',
         '如果无法生成合法操作，请保持 warnings 为字符串数组，并让 operations=[]，不要输出协议外字段。',
+        embeddedReferenceText,
     ].join('\n');
 }
 function buildUserPrompt_ACU(input, baseFingerprint) {
@@ -41440,6 +41526,12 @@ function buildUserPrompt_ACU(input, baseFingerprint) {
             allowStructuredLockPatch: true,
             contentPatchRowNumberBase: 1,
             lockPatchRowNumberBase: 1,
+            preferRichSourceDataForAddSheet: true,
+            defaultNoDdlForNewSheetUnlessExplicitlyRequested: true,
+            ddlMustMatchCurrentHeadersExactly: true,
+            avoidDdlWhenHeadersAreMostlyChinese: true,
+            avoidSlashInNewCustomHeaders: true,
+            cannotPatchNewSheetAfterAddInSameDraft: true,
         },
     };
     return safeJsonStringify_ACU(payload, '{}');
