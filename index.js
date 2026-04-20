@@ -6856,7 +6856,7 @@ function parseDDLTableName(ddl) {
     if (!ddl)
         return null;
     // 匹配 CREATE TABLE [IF NOT EXISTS] table_name
-    const match = ddl.match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)/i);
+    const match = ddl.match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([^\s(]+)/i);
     return match ? match[1] : null;
 }
 /**
@@ -6898,7 +6898,7 @@ function parseDDLColumnNames(ddl) {
         if (/^(?:PRIMARY\s+KEY|FOREIGN\s+KEY|UNIQUE|CHECK|CONSTRAINT)\b/i.test(withoutComments))
             continue;
         // 提取列名（第一个标识符）
-        const colMatch = withoutComments.match(/^(\w+)/);
+        const colMatch = withoutComments.match(/^([^\s,()]+)/);
         if (colMatch) {
             columns.push(colMatch[1]);
         }
@@ -6927,7 +6927,7 @@ function parseDDLColumnComments(ddl) {
         if (!trimmed)
             continue;
         // 匹配 column_name ... -- 注释（行内可能有逗号、CHECK 约束等）
-        const match = trimmed.match(/^(\w+)\s+.*?--\s*(.+?)\s*,?\s*$/);
+        const match = trimmed.match(/^([^\s,()]+)\s+.*?--\s*(.+?)\s*,?\s*$/);
         if (match) {
             comments.set(match[1], match[2]);
         }
@@ -6948,6 +6948,60 @@ function buildColumnNameMap(ddl) {
         chineseToSql.set(comment, colName);
     }
     return { sqlToChinese, chineseToSql };
+}
+function parseDDLColumnInfos_ACU(ddl) {
+    const columnNames = parseDDLColumnNames(ddl);
+    const comments = parseDDLColumnComments(ddl);
+    return columnNames.map((sqlName, index) => {
+        const rawComment = comments.get(sqlName);
+        const comment = typeof rawComment === 'string' && rawComment.trim() ? rawComment.trim() : null;
+        return {
+            index,
+            sqlName,
+            comment,
+        };
+    });
+}
+function validateDDLTextAgainstHeaders_ACU(ddlText, tableHeaders) {
+    const trimmed = String(ddlText || '').trim();
+    if (!trimmed) {
+        return { valid: false, message: '⚠ DDL 为空' };
+    }
+    if (!/CREATE\s+TABLE/i.test(trimmed)) {
+        return { valid: false, message: '✗ 不是有效的 CREATE TABLE 语句' };
+    }
+    const columnInfos = parseDDLColumnInfos_ACU(trimmed);
+    const firstColumn = columnInfos[0];
+    if (!firstColumn || firstColumn.sqlName.toLowerCase() !== 'row_id' || !/row_id\s+INTEGER\s+PRIMARY\s+KEY/i.test(trimmed)) {
+        return { valid: false, message: '✗ 缺少 row_id INTEGER PRIMARY KEY 列（必须作为第一列）' };
+    }
+    const normalizedHeaders = Array.isArray(tableHeaders)
+        ? tableHeaders.map((item) => String(item ?? '').trim()).filter(Boolean)
+        : [];
+    const comparableHeaders = normalizedHeaders[0] === 'row_id'
+        ? normalizedHeaders.slice(1)
+        : normalizedHeaders;
+    const comparableColumns = columnInfos.filter((item) => item.sqlName.toLowerCase() !== 'row_id');
+    const issues = [];
+    if (comparableColumns.length !== comparableHeaders.length) {
+        issues.push(`列数不匹配：DDL 有 ${comparableColumns.length} 列，表头有 ${comparableHeaders.length} 列`);
+    }
+    const compareLength = Math.min(comparableColumns.length, comparableHeaders.length);
+    for (let index = 0; index < compareLength; index += 1) {
+        const ddlColumn = comparableColumns[index];
+        const header = comparableHeaders[index];
+        const matchesPhysical = ddlColumn.sqlName === header;
+        const matchesComment = !!ddlColumn.comment && ddlColumn.comment === header;
+        if (!matchesPhysical && !matchesComment) {
+            issues.push(ddlColumn.comment
+                ? `第 ${index + 1} 列不匹配：DDL 列名为「${ddlColumn.sqlName}」，注释为「${ddlColumn.comment}」，表头为「${header}」`
+                : `第 ${index + 1} 列不匹配：DDL 列名为「${ddlColumn.sqlName}」，表头为「${header}」`);
+        }
+    }
+    if (issues.length > 0) {
+        return { valid: false, message: `⚠ DDL 列名与表头不完全匹配：${issues.join('；')}` };
+    }
+    return { valid: true, message: '✓ DDL 格式正确，列名与表头匹配' };
 }
 /**
  * 根据列在 DDL 中的位置索引获取英文列名
@@ -6983,7 +7037,7 @@ function updateDDLColumnComment(ddl, columnName, newComment) {
         if (!trimmed)
             continue;
         // 检查该行是否以目标列名开头（列定义行）
-        const colMatch = trimmed.match(/^(\w+)\s+/);
+        const colMatch = trimmed.match(/^([^\s,()]+)\s+/);
         if (!colMatch || colMatch[1] !== columnName)
             continue;
         // 找到目标列，替换或添加注释
@@ -7224,28 +7278,12 @@ function resultToContent(columns, values, chineseHeaders) {
  * @returns 校验结果
  */
 function validateDDLAgainstHeaders(ddl, headers) {
-    const ddlColumns = parseDDLColumnNames(ddl);
-    const ddlComments = parseDDLColumnComments(ddl);
-    const mismatches = [];
-    // 列数检查
-    const filteredHeaders = headers.filter(h => h !== null);
-    if (ddlColumns.length !== filteredHeaders.length) {
-        mismatches.push(`列数不匹配: DDL 有 ${ddlColumns.length} 列, content 表头有 ${filteredHeaders.length} 列`);
-    }
-    // 逐列检查：DDL 注释中的中文名应该和 content 表头对应
-    for (let i = 0; i < Math.min(ddlColumns.length, filteredHeaders.length); i++) {
-        const header = filteredHeaders[i];
-        const ddlCol = ddlColumns[i];
-        const ddlComment = ddlComments.get(ddlCol);
-        // row_id 列特殊处理
-        if (ddlCol === 'row_id' && header === 'row_id')
-            continue;
-        // 如果 DDL 有注释，检查注释是否和表头匹配
-        if (ddlComment && header && ddlComment !== header) {
-            mismatches.push(`第 ${i + 1} 列不匹配: DDL 列 "${ddlCol}" 注释 "${ddlComment}" ≠ 表头 "${header}"`);
-        }
-    }
-    return { valid: mismatches.length === 0, mismatches };
+    const normalizedHeaders = headers.filter(h => h !== null).map(h => String(h ?? ''));
+    const result = validateDDLTextAgainstHeaders_ACU(ddl, normalizedHeaders);
+    return {
+        valid: result.valid,
+        mismatches: result.valid ? [] : [result.message],
+    };
 }
 // ═══════════════════════════════════════════════════════════════
 // 内部工具函数
@@ -27215,38 +27253,7 @@ function renderTemplatePresetSelect_ACU($select, { keepValue = true } = {}) {
  * @returns { valid: boolean; message: string } 校验结果
  */
 function validateDDLText(ddlText, tableHeaders) {
-    const trimmed = (ddlText || '').trim();
-    if (!trimmed) {
-        return { valid: false, message: '⚠ DDL 为空' };
-    }
-    // 校验 1：是否包含 CREATE TABLE
-    if (!/CREATE\s+TABLE/i.test(trimmed)) {
-        return { valid: false, message: '✗ 不是有效的 CREATE TABLE 语句' };
-    }
-    // 校验 2：是否包含 row_id 主键列
-    if (!/row_id\s+INTEGER\s+PRIMARY\s+KEY/i.test(trimmed)) {
-        return { valid: false, message: '✗ 缺少 row_id INTEGER PRIMARY KEY 列（必须作为第一列）' };
-    }
-    // 校验 3：提取 DDL 列名，与当前表头对比
-    const colMatches = trimmed.match(/\(([^)]+)\)/s);
-    if (colMatches) {
-        const ddlCols = colMatches[1]
-            .split(',')
-            .map(c => c.trim().split(/\s+/)[0])
-            .filter(c => c && !c.startsWith('--'));
-        const ddlColsNoRowId = ddlCols.filter(c => c.toLowerCase() !== 'row_id');
-        const mismatch = ddlColsNoRowId.filter(c => !tableHeaders.includes(c));
-        const missing = tableHeaders.filter((h) => !ddlColsNoRowId.includes(h));
-        if (mismatch.length > 0 || missing.length > 0) {
-            let msg = '⚠ DDL 列名与表头不完全匹配：';
-            if (mismatch.length > 0)
-                msg += `DDL 多出: ${mismatch.join(', ')}；`;
-            if (missing.length > 0)
-                msg += `表头多出: ${missing.join(', ')}`;
-            return { valid: false, message: msg };
-        }
-    }
-    return { valid: true, message: '✓ DDL 格式正确，列名与表头匹配' };
+    return validateDDLTextAgainstHeaders_ACU(ddlText, tableHeaders);
 }
 function renderVisualizerConfigMode_ACU($container, sheet) {
     const config = ensureSheetExportConfigDefaults_ACU(sheet);
@@ -40558,28 +40565,7 @@ function assertHeadersUnique_ACU(headers) {
     });
 }
 function validateDdlAgainstHeaders_ACU(ddlText, tableHeaders) {
-    const trimmed = String(ddlText || '').trim();
-    if (!trimmed) {
-        return { valid: false, message: '⚠ DDL 为空' };
-    }
-    if (!/CREATE\s+TABLE/i.test(trimmed)) {
-        return { valid: false, message: '✗ 不是有效的 CREATE TABLE 语句' };
-    }
-    if (!/row_id\s+INTEGER\s+PRIMARY\s+KEY/i.test(trimmed)) {
-        return { valid: false, message: '✗ 缺少 row_id INTEGER PRIMARY KEY 列（必须作为第一列）' };
-    }
-    const ddlCols = parseDDLColumnNames(trimmed).filter((item) => item.toLowerCase() !== 'row_id');
-    const mismatch = ddlCols.filter((col) => !tableHeaders.includes(col));
-    const missing = tableHeaders.filter((header) => !ddlCols.includes(header));
-    if (mismatch.length > 0 || missing.length > 0) {
-        let message = '⚠ DDL 列名与表头不完全匹配：';
-        if (mismatch.length > 0)
-            message += `DDL 多出: ${mismatch.join(', ')}；`;
-        if (missing.length > 0)
-            message += `表头多出: ${missing.join(', ')}`;
-        return { valid: false, message };
-    }
-    return { valid: true, message: '✓ DDL 格式正确，列名与表头匹配' };
+    return validateDDLTextAgainstHeaders_ACU(ddlText, tableHeaders);
 }
 function getEffectiveSpecialIndexLockEnabled_ACU(sheetKey, overrides) {
     if (Object.prototype.hasOwnProperty.call(overrides, sheetKey)) {
@@ -41935,7 +41921,6 @@ function bindEvents_ACU() {
         const applied = applyTemplateAssistantDraftToVisualizer_ACU(turn.result);
         if (!applied)
             return;
-        clearAssistantDraftState_ACU();
         renderVisualizerTemplateAssistantPanel_ACU();
     });
 }
