@@ -41715,6 +41715,16 @@ function buildDiffHtml_ACU(result) {
 function areHighRiskItemsConfirmed_ACU(turn) {
     return turn.result.compileResult.highRiskItems.every((_, index) => turn.riskConfirmations[getRiskConfirmationKey_ACU(index)]);
 }
+function syncLatestApplyButtonDisabledState_ACU(turn) {
+    const latestTurn = assistantUiState_ACU.transcript[assistantUiState_ACU.transcript.length - 1];
+    if (!latestTurn || latestTurn.type !== 'assistant' || latestTurn.id !== turn.id)
+        return;
+    const $btn = getHost_ACU().find('#acu-vis-assistant-apply');
+    if (!$btn.length)
+        return;
+    const applyDisabled = turn.result.compileResult.highRiskItems.length > 0 && !areHighRiskItemsConfirmed_ACU(turn);
+    $btn.prop('disabled', applyDisabled);
+}
 function renderCollapsedSection_ACU(title, summary, sectionKey, expanded, detailContent) {
     const expandIcon = expanded ? '▼' : '▶';
     const detailStyle = expanded ? '' : 'display:none;';
@@ -41910,7 +41920,7 @@ function bindEvents_ACU() {
         const turn = assistantUiState_ACU.transcript.find(t => t.id === turnId && t.type === 'assistant');
         if (turn) {
             turn.riskConfirmations[riskKey] = !!jQuery_API_ACU(this).prop('checked');
-            renderVisualizerTemplateAssistantPanel_ACU();
+            syncLatestApplyButtonDisabledState_ACU(turn);
         }
     });
     $host.find('#acu-vis-assistant-apply').on('click', function () {
