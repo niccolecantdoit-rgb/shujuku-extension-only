@@ -41594,6 +41594,7 @@ function buildSystemPrompt_ACU() {
         'patch_sheet_source_data 不能修改 ddl；DDL 只能通过 patch_sheet_schema.patch.ddl 修改。',
         '当前协议校验会逐列对比 patch_sheet_schema.patch.ddl 与当前 headers：ASCII/英文 headers 必须由同名物理列匹配；中文 headers 必须使用英文/ASCII 物理列名，并用 `-- 中文表头` 注释匹配。第一列必须是 row_id INTEGER PRIMARY KEY。',
         '正确示例（中文 headers）：CREATE TABLE loot_table ( -- 战利品表\n  row_id INTEGER PRIMARY KEY, -- 行号\n  item_name TEXT, -- 物品名称\n  quantity INTEGER, -- 数量\n  time_span TEXT NOT NULL, -- 时间跨度\n  remarks TEXT -- 备注\n);',
+        '即使是 row_id INTEGER PRIMARY KEY 这一行，也必须保留 `-- 行号` 注释，不能省略。',
         '错误示例：CREATE TABLE loot_table (\n  row_id INTEGER PRIMARY KEY,\n  物品名称 TEXT,\n  数量 INTEGER\n); 这种把中文表头直接写成物理列名的 ddl 会被拒绝；即使再写 `-- 物品名称` 这类同名注释也不合法。',
         '不要为刚 add_sheet 的新表生成依赖真实 sheetKey 的 follow-up patch 来补 DDL 或 starter rows；当前同一份 draft 无法可靠引用尚未落地的新表。',
         'patch_sheet_content.patch 只允许使用 updateCells、addRows、deleteRows；其中 rowNumber 必须使用 1-based 行号，列使用 columnName。',
@@ -41737,6 +41738,23 @@ function getTemplateAssistantApplyBaselineFingerprint_ACU(result) {
     }
     return String(result?.draft?.baseFingerprint || '').trim();
 }
+function emitTemplateAssistantRoundComplete_ACU(onRoundComplete, round, rounds, maxRounds) {
+    if (typeof onRoundComplete !== 'function')
+        return;
+    try {
+        onRoundComplete({
+            round: clone_ACU$1(round),
+            rounds: clone_ACU$1(rounds),
+            maxRounds,
+        });
+    }
+    catch (error) {
+        logError_ACU('[TemplateAssistant] onRoundComplete 执行失败', {
+            errorMessage: error?.message || '未知错误',
+            round: round.round,
+        });
+    }
+}
 async function generateTemplateAssistantDraft_ACU(input) {
     const tempData = asObject_ACU(input?.tempData);
     const userRequest = String(input?.userRequest || '').trim();
@@ -41804,6 +41822,7 @@ async function runTemplateAssistantSession_ACU(input) {
     const originalBaseFingerprint = buildTemplateAssistantFingerprint_ACU(originalTempData);
     const rounds = [];
     const basePriorTurns = normalizePriorTurns_ACU(input?.priorTurns);
+    const onRoundComplete = input?.onRoundComplete;
     let workingTempData = clone_ACU$1(originalTempData);
     let workingSheetOrder = Array.isArray(originalSheetOrder) ? [...originalSheetOrder] : null;
     let workingCurrentSheetKey = currentSheetKey;
@@ -41843,7 +41862,7 @@ async function runTemplateAssistantSession_ACU(input) {
                     ? (Array.isArray(result.compileResult.orderedSheetKeys) ? [...result.compileResult.orderedSheetKeys] : [])
                     : (Array.isArray(workingSheetOrder) ? [...workingSheetOrder] : null);
                 const nextWorkingFingerprint = hasOperations ? buildTemplateAssistantFingerprint_ACU(nextWorkingTempData) : workingFingerprint;
-                rounds.push({
+                const roundRecord = {
                     round,
                     userRequest: roundUserRequest,
                     draft: result.draft,
@@ -41851,7 +41870,9 @@ async function runTemplateAssistantSession_ACU(input) {
                     messages: result.messages,
                     perRoundCompileResult: result.compileResult,
                     workingFingerprint: nextWorkingFingerprint,
-                });
+                };
+                rounds.push(roundRecord);
+                emitTemplateAssistantRoundComplete_ACU(onRoundComplete, roundRecord, rounds, maxRounds);
                 if (!hasOperations) {
                     stopReason = 'empty_operations';
                     break outerLoop;
@@ -42026,6 +42047,24 @@ function restoreScrollState_ACU(container) {
 function clearAssistantDraftState_ACU() {
     assistantUiState_ACU.transcript = [];
 }
+function isFinalAssistantTurn_ACU(turn) {
+    return turn.phase === 'final';
+}
+function getAssistantDraft_ACU(turn) {
+    return isFinalAssistantTurn_ACU(turn) ? turn.result.draft : turn.roundData.draft;
+}
+function getAssistantCompileResult_ACU(turn) {
+    return isFinalAssistantTurn_ACU(turn) ? turn.result.compileResult : turn.roundData.perRoundCompileResult;
+}
+function getAssistantAiRawText_ACU(turn) {
+    return isFinalAssistantTurn_ACU(turn) ? turn.result.aiRawText : turn.roundData.aiRawText;
+}
+function buildAssistantRoundProgressLabel_ACU(turn) {
+    if (isFinalAssistantTurn_ACU(turn)) {
+        return buildSessionMetaSummary_ACU(turn.result);
+    }
+    return `第 ${turn.roundData.round} / ${turn.maxRounds} 轮`;
+}
 function buildPriorTurnsFromTranscript_ACU(transcript) {
     const priorTurns = [];
     for (let i = 0; i < transcript.length; i++) {
@@ -42038,13 +42077,12 @@ function buildPriorTurnsFromTranscript_ACU(transcript) {
             let assistantText = undefined;
             for (let j = i + 1; j < transcript.length; j++) {
                 const nextTurn = transcript[j];
-                if (nextTurn.type === 'assistant') {
-                    assistantText = String(nextTurn.result?.aiRawText || '').trim();
-                    break;
-                }
                 if (nextTurn.type === 'user') {
                     // 遇到下一个 user turn，说明当前 user 没有对应的 assistant
                     break;
+                }
+                if (nextTurn.type === 'assistant' && isFinalAssistantTurn_ACU(nextTurn)) {
+                    assistantText = String(getAssistantAiRawText_ACU(nextTurn) || '').trim();
                 }
                 // error turn 跳过，继续查找可能的 assistant
             }
@@ -42136,8 +42174,7 @@ function buildDiffSummary_ACU(diff) {
         parts.push('全局配置变更');
     return parts.length ? parts.join('、') : '无变更';
 }
-function buildDiffHtml_ACU(result) {
-    const diff = result.compileResult.diff;
+function buildDiffHtml_ACU(diff) {
     const sections = [];
     const renderList = (items) => items.length ? `<ul>${items.map((item) => `<li>${escapeHtml_ACU(item)}</li>`).join('')}</ul>` : '<div class="acu-hint">无</div>';
     sections.push(`<div class="acu-assistant-diff-block"><strong>新增表</strong>${renderList(diff.addedSheets.map((item) => `${item.name} [${item.sheetKey}]`))}</div>`);
@@ -42154,16 +42191,18 @@ function buildDiffHtml_ACU(result) {
     return sections.join('');
 }
 function areHighRiskItemsConfirmed_ACU(turn) {
-    return turn.result.compileResult.highRiskItems.every((_, index) => turn.riskConfirmations[getRiskConfirmationKey_ACU(index)]);
+    return getAssistantCompileResult_ACU(turn).highRiskItems.every((_, index) => turn.riskConfirmations[getRiskConfirmationKey_ACU(index)]);
 }
 function syncLatestApplyButtonDisabledState_ACU(turn) {
     const latestTurn = assistantUiState_ACU.transcript[assistantUiState_ACU.transcript.length - 1];
     if (!latestTurn || latestTurn.type !== 'assistant' || latestTurn.id !== turn.id)
         return;
+    if (!isFinalAssistantTurn_ACU(turn))
+        return;
     const button = getApplyButtonElement_ACU();
     if (!button)
         return;
-    const applyDisabled = turn.result.compileResult.highRiskItems.length > 0 && !areHighRiskItemsConfirmed_ACU(turn);
+    const applyDisabled = getAssistantCompileResult_ACU(turn).highRiskItems.length > 0 && !areHighRiskItemsConfirmed_ACU(turn);
     button.disabled = applyDisabled;
 }
 function renderCollapsedSection_ACU(title, summary, sectionKey, expanded, detailContent) {
@@ -42182,39 +42221,46 @@ function renderCollapsedSection_ACU(title, summary, sectionKey, expanded, detail
         </div>
     `;
 }
-function buildAssistantDetailSummary_ACU(result) {
+function buildAssistantDetailSummary_ACU(turn) {
+    const draft = getAssistantDraft_ACU(turn);
+    const compileResult = getAssistantCompileResult_ACU(turn);
     const parts = [];
-    const warningCount = result.draft.warnings.length;
-    const changeCount = countDiffChanges_ACU(result.compileResult.diff);
-    const riskCount = result.compileResult.highRiskItems.length;
-    const sessionSummary = buildSessionMetaSummary_ACU(result);
+    const warningCount = draft.warnings.length;
+    const changeCount = countDiffChanges_ACU(compileResult.diff);
+    const riskCount = compileResult.highRiskItems.length;
+    const progressSummary = buildAssistantRoundProgressLabel_ACU(turn);
     if (warningCount > 0)
         parts.push(`警告${warningCount}条`);
     if (changeCount > 0)
         parts.push(`变更${changeCount}处`);
     if (riskCount > 0)
         parts.push(`高风险${riskCount}项`);
-    if (sessionSummary)
-        parts.push(sessionSummary);
+    if (progressSummary)
+        parts.push(progressSummary);
     return parts.length > 0 ? parts.join(' · ') : '无变更';
 }
-function buildAssistantDetailContent_ACU(result, turn) {
+function buildAssistantDetailContent_ACU(turn) {
+    const draft = getAssistantDraft_ACU(turn);
+    const compileResult = getAssistantCompileResult_ACU(turn);
     const sections = [];
-    const sessionSummary = buildSessionMetaSummary_ACU(result);
-    if (sessionSummary) {
-        sections.push(`<div class="acu-assistant-diff-block"><strong>会话信息</strong><div>${escapeHtml_ACU(sessionSummary)}</div></div>`);
+    const progressSummary = buildAssistantRoundProgressLabel_ACU(turn);
+    if (progressSummary) {
+        sections.push(`<div class="acu-assistant-diff-block"><strong>${isFinalAssistantTurn_ACU(turn) ? '会话信息' : '轮次信息'}</strong><div>${escapeHtml_ACU(progressSummary)}${isFinalAssistantTurn_ACU(turn) ? '' : '（中间结果，暂不可应用）'}</div></div>`);
     }
     // 警告部分
-    const warningsDetail = result.draft.warnings.length
-        ? `<ul>${result.draft.warnings.map((item) => `<li>${escapeHtml_ACU(item)}</li>`).join('')}</ul>`
+    const warningsDetail = draft.warnings.length
+        ? `<ul>${draft.warnings.map((item) => `<li>${escapeHtml_ACU(item)}</li>`).join('')}</ul>`
         : '<div class="acu-hint">无</div>';
     sections.push(`<div class="acu-assistant-diff-block"><strong>警告</strong>${warningsDetail}</div>`);
     // 变更部分
-    sections.push(`<div class="acu-assistant-diff-block"><strong>变更详情</strong>${buildDiffHtml_ACU(result)}</div>`);
+    sections.push(`<div class="acu-assistant-diff-block"><strong>变更详情</strong>${buildDiffHtml_ACU(compileResult.diff)}</div>`);
     // 高风险部分
-    const riskDetail = result.compileResult.highRiskItems.length
-        ? result.compileResult.highRiskItems.map((item, index) => {
+    const riskDetail = compileResult.highRiskItems.length
+        ? compileResult.highRiskItems.map((item, index) => {
             const riskKey = getRiskConfirmationKey_ACU(index);
+            if (!isFinalAssistantTurn_ACU(turn)) {
+                return `<div class="acu-assistant-risk-item"><span>${escapeHtml_ACU(item.label)}</span></div>`;
+            }
             return `
                 <label class="acu-assistant-risk-item">
                     <input type="checkbox" class="acu-assistant-risk-confirm" data-turn-id="${escapeHtml_ACU(turn.id)}" data-risk-key="${escapeHtml_ACU(riskKey)}" ${turn.riskConfirmations[riskKey] ? 'checked' : ''}>
@@ -42227,20 +42273,22 @@ function buildAssistantDetailContent_ACU(result, turn) {
     return sections.join('');
 }
 function renderAssistantTurn_ACU(turn, isLatest) {
-    const result = turn.result;
-    const detailSummary = buildAssistantDetailSummary_ACU(result);
-    const detailContent = buildAssistantDetailContent_ACU(result, turn);
+    const draft = getAssistantDraft_ACU(turn);
+    const compileResult = getAssistantCompileResult_ACU(turn);
+    const detailSummary = buildAssistantDetailSummary_ACU(turn);
+    const detailContent = buildAssistantDetailContent_ACU(turn);
     const isExpanded = turn.expandedSections.details || false;
-    const applyDisabled = result.compileResult.highRiskItems.length > 0 && !areHighRiskItemsConfirmed_ACU(turn);
-    const applyHtml = isLatest
+    const applyDisabled = compileResult.highRiskItems.length > 0 && !areHighRiskItemsConfirmed_ACU(turn);
+    const applyHtml = isLatest && isFinalAssistantTurn_ACU(turn)
         ? `<button id="acu-vis-assistant-apply" class="acu-btn-primary" data-turn-id="${escapeHtml_ACU(turn.id)}" ${applyDisabled ? 'disabled' : ''}>应用到编辑器</button>`
         : '';
+    const turnLabel = isFinalAssistantTurn_ACU(turn) ? 'AI 助手' : `AI 助手 · 第 ${turn.roundData.round} / ${turn.maxRounds} 轮`;
     return `
         <div class="acu-chat-turn acu-chat-turn-assistant" data-turn-id="${escapeHtml_ACU(turn.id)}" style="display:flex; justify-content:flex-start;">
             <div class="acu-message-bubble acu-message-bubble-assistant" style="max-width:82%; width:fit-content; min-width:240px; padding:12px 14px; border-radius:16px 16px 16px 4px; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.12); box-shadow:0 10px 24px rgba(0,0,0,0.18); backdrop-filter:blur(10px);">
-                <div class="acu-chat-turn-label" style="font-size:12px; font-weight:600; opacity:0.78; margin-bottom:6px;">AI 助手</div>
+                <div class="acu-chat-turn-label" style="font-size:12px; font-weight:600; opacity:0.78; margin-bottom:6px;">${escapeHtml_ACU(turnLabel)}</div>
                 <div class="acu-chat-turn-content">
-                    <div class="acu-assistant-summary" style="line-height:1.6; white-space:pre-wrap; word-break:break-word;">${escapeHtml_ACU(result.draft.summary || '（无摘要）')}</div>
+                    <div class="acu-assistant-summary" style="line-height:1.6; white-space:pre-wrap; word-break:break-word;">${escapeHtml_ACU(draft.summary || '（无摘要）')}</div>
                 </div>
                 ${renderCollapsedSection_ACU('详情', detailSummary, 'details', isExpanded, detailContent)}
                 ${applyHtml ? `<div class="acu-assistant-actions-row">${applyHtml}</div>` : ''}
@@ -42310,6 +42358,7 @@ function bindEvents_ACU() {
         if (!userRequest)
             return;
         captureScrollState_ACU('append');
+        const previewTurnIds = [];
         // 在添加当前用户轮次前构建 priorTurns（不包含当前请求）
         const priorTurns = buildPriorTurnsFromTranscript_ACU(assistantUiState_ACU.transcript);
         // 立即添加用户轮次
@@ -42330,9 +42379,27 @@ function bindEvents_ACU() {
                 sheetOrder: Array.isArray(_acuVisState.sheetOrder) ? [..._acuVisState.sheetOrder] : null,
                 userRequest: userRequest,
                 priorTurns: priorTurns,
+                onRoundComplete: (progress) => {
+                    if ((requestSheetKey || null) !== (_acuVisState.currentSheetKey || null))
+                        return;
+                    captureScrollState_ACU('append');
+                    const previewTurn = {
+                        type: 'assistant',
+                        phase: 'round',
+                        id: generateTurnId_ACU(),
+                        roundData: progress.round,
+                        maxRounds: progress.maxRounds,
+                        riskConfirmations: {},
+                        expandedSections: {},
+                        timestamp: Date.now(),
+                    };
+                    previewTurnIds.push(previewTurn.id);
+                    assistantUiState_ACU.transcript.push(previewTurn);
+                    renderVisualizerTemplateAssistantPanel_ACU();
+                },
             });
             if ((requestSheetKey || null) !== (_acuVisState.currentSheetKey || null)) {
-                assistantUiState_ACU.transcript = assistantUiState_ACU.transcript.filter((turn) => turn.id !== userTurn.id);
+                assistantUiState_ACU.transcript = assistantUiState_ACU.transcript.filter((turn) => turn.id !== userTurn.id && !previewTurnIds.includes(turn.id));
                 const errorTurn = {
                     type: 'error',
                     id: generateTurnId_ACU(),
@@ -42344,15 +42411,28 @@ function bindEvents_ACU() {
                 renderVisualizerTemplateAssistantPanel_ACU();
                 return;
             }
-            const assistantTurn = {
+            const finalAssistantTurn = {
                 type: 'assistant',
-                id: generateTurnId_ACU(),
+                phase: 'final',
+                id: previewTurnIds[previewTurnIds.length - 1] || generateTurnId_ACU(),
                 result: result,
                 riskConfirmations: {},
                 expandedSections: {},
                 timestamp: Date.now(),
             };
-            assistantUiState_ACU.transcript.push(assistantTurn);
+            captureScrollState_ACU('append');
+            if (previewTurnIds.length > 0) {
+                const latestPreviewId = previewTurnIds[previewTurnIds.length - 1];
+                assistantUiState_ACU.transcript = assistantUiState_ACU.transcript.map((turn) => {
+                    if (turn.type === 'assistant' && turn.id === latestPreviewId) {
+                        return finalAssistantTurn;
+                    }
+                    return turn;
+                });
+            }
+            else {
+                assistantUiState_ACU.transcript.push(finalAssistantTurn);
+            }
         }
         catch (error) {
             const errorTurn = {
@@ -42394,9 +42474,9 @@ function bindEvents_ACU() {
     $host.find('#acu-vis-assistant-apply').on('click', function () {
         const turnId = readDataAttrFromElement_ACU(this, 'turn-id');
         const turn = assistantUiState_ACU.transcript.find(t => t.id === turnId && t.type === 'assistant');
-        if (!turn)
+        if (!turn || !isFinalAssistantTurn_ACU(turn))
             return;
-        if (turn.result.compileResult.highRiskItems.length > 0 && !areHighRiskItemsConfirmed_ACU(turn)) {
+        if (getAssistantCompileResult_ACU(turn).highRiskItems.length > 0 && !areHighRiskItemsConfirmed_ACU(turn)) {
             showToastr_ACU('warning', '请先确认所有高风险项后再应用。');
             return;
         }
@@ -42420,7 +42500,7 @@ function handleVisualizerTemplateAssistantSheetChange_ACU() {
     captureScrollState_ACU('preserve');
     const currentSheetKey = _acuVisState.currentSheetKey || null;
     // 检查最新的assistant轮次是否是v1且需要清除
-    const lastAssistantTurn = [...assistantUiState_ACU.transcript].reverse().find(t => t.type === 'assistant');
+    const lastAssistantTurn = [...assistantUiState_ACU.transcript].reverse().find((t) => t.type === 'assistant' && isFinalAssistantTurn_ACU(t));
     if (lastAssistantTurn
         && lastAssistantTurn.result.draft.protocolVersion === 1
         && lastAssistantTurn.result.draft.selectedSheetKey !== currentSheetKey) {
