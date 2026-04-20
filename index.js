@@ -41690,6 +41690,16 @@ function getRiskConfirmationKey_ACU(index) {
 function getHost_ACU() {
     return jQuery_API_ACU('#acu-vis-assistant-host');
 }
+function readDataAttrFromElement_ACU(node, name) {
+    if (!node || typeof node !== 'object' || !('getAttribute' in node))
+        return '';
+    return String(node.getAttribute(`data-${name}`) || '');
+}
+function getApplyButtonElement_ACU() {
+    if (typeof document === 'undefined')
+        return null;
+    return document.querySelector('#acu-vis-assistant-apply');
+}
 function getSelectedSheetLabel_ACU() {
     const sheetKey = _acuVisState.currentSheetKey;
     const sheet = sheetKey ? _acuVisState.tempData?.[sheetKey] : null;
@@ -41754,11 +41764,11 @@ function syncLatestApplyButtonDisabledState_ACU(turn) {
     const latestTurn = assistantUiState_ACU.transcript[assistantUiState_ACU.transcript.length - 1];
     if (!latestTurn || latestTurn.type !== 'assistant' || latestTurn.id !== turn.id)
         return;
-    const $btn = getHost_ACU().find('#acu-vis-assistant-apply');
-    if (!$btn.length)
+    const button = getApplyButtonElement_ACU();
+    if (!button)
         return;
     const applyDisabled = turn.result.compileResult.highRiskItems.length > 0 && !areHighRiskItemsConfirmed_ACU(turn);
-    $btn.prop('disabled', applyDisabled);
+    button.disabled = applyDisabled;
 }
 function renderCollapsedSection_ACU(title, summary, sectionKey, expanded, detailContent) {
     const expandIcon = expanded ? '▼' : '▶';
@@ -41950,19 +41960,23 @@ function bindEvents_ACU() {
         }
     });
     $host.find('.acu-assistant-risk-confirm').on('change', function () {
-        const riskKey = String(jQuery_API_ACU(this).data('risk-key') || '');
-        const turnId = String(jQuery_API_ACU(this).data('turn-id') || '');
+        const riskKey = readDataAttrFromElement_ACU(this, 'risk-key');
+        const turnId = readDataAttrFromElement_ACU(this, 'turn-id');
         const turn = assistantUiState_ACU.transcript.find(t => t.id === turnId && t.type === 'assistant');
         if (turn) {
-            turn.riskConfirmations[riskKey] = !!jQuery_API_ACU(this).prop('checked');
+            turn.riskConfirmations[riskKey] = !!(this?.checked);
             syncLatestApplyButtonDisabledState_ACU(turn);
         }
     });
     $host.find('#acu-vis-assistant-apply').on('click', function () {
-        const turnId = String(jQuery_API_ACU(this).data('turn-id') || '');
+        const turnId = readDataAttrFromElement_ACU(this, 'turn-id');
         const turn = assistantUiState_ACU.transcript.find(t => t.id === turnId && t.type === 'assistant');
         if (!turn)
             return;
+        if (turn.result.compileResult.highRiskItems.length > 0 && !areHighRiskItemsConfirmed_ACU(turn)) {
+            showToastr_ACU('warning', '请先确认所有高风险项后再应用。');
+            return;
+        }
         const applied = applyTemplateAssistantDraftToVisualizer_ACU(turn.result);
         if (!applied)
             return;
